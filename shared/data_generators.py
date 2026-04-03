@@ -12,11 +12,7 @@ def generate_scenarios(
     seed: int = 42,
 ) -> List[Tuple[str, np.ndarray, np.ndarray, int]]:
     """Create *n* synthetic (label, history, future, seed) tuples.
-
-    Returns
-    -------
-    list[tuple[str, np.ndarray, np.ndarray, int]]
-        ``(scenario_label, history_array, future_array, per_seed)``.
+    Models daily e-commerce unit sales.
     """
     rng = np.random.default_rng(seed)
     labels = ["trending", "volatile", "flat"]
@@ -27,23 +23,24 @@ def generate_scenarios(
         per_seed = int(rng.integers(0, 2**31))
         sub_rng = np.random.default_rng(per_seed)
 
-        horizon = 14  # default
+        horizon = 14  # 14 days
+        # E-commerce baseline ~500 sales/day
         if label == "trending":
-            drift = sub_rng.choice([-1, 1]) * sub_rng.uniform(0.3, 1.0)
-            full = 100.0 + np.cumsum(
-                drift + sub_rng.normal(0, 0.3, size=50 + horizon)
+            drift = sub_rng.choice([-1, 1]) * sub_rng.uniform(2.0, 5.0)
+            full = 500.0 + np.cumsum(
+                drift + sub_rng.normal(0, 5.0, size=50 + horizon)
             )
         elif label == "volatile":
-            full = 100.0 + np.cumsum(
-                sub_rng.normal(0, 2.0, size=50 + horizon)
+            full = 500.0 + np.cumsum(
+                sub_rng.normal(0, 15.0, size=50 + horizon)
             )
         else:  # flat
-            full = 100.0 + np.cumsum(
-                sub_rng.normal(0, 0.1, size=50 + horizon)
+            full = 500.0 + np.cumsum(
+                sub_rng.normal(0, 2.0, size=50 + horizon)
             )
 
-        history = full[:50]
-        future = full[50: 50 + horizon]
+        history = np.clip(full[:50], 0, None)
+        future = np.clip(full[50: 50 + horizon], 0, None)
         scenarios.append((label, history, future, per_seed))
 
     return scenarios
@@ -51,58 +48,61 @@ def generate_scenarios(
 
 def generate_synthetic_covariates(
     history: np.ndarray,
-    n_covariates: int = 4,
+    n_covariates: int = 10,
     seed: int = 42,
 ):
-    """Generate synthetic covariates, one correlated with the target.
-
-    Parameters
-    ----------
-    history : np.ndarray
-        Historical time-series.
-    n_covariates : int
-        Number of covariates.
-    seed : int
-        Random seed.
-
-    Returns
-    -------
-    CovariateSet
-        Synthetic covariates.
-    """
-    # Import CovariateSet here to avoid circular/hard dependency
+    """Generate 10 synthetic covariates for the E-commerce domain."""
     from extension_1.covariate_attribution import CovariateSet
 
     rng = np.random.default_rng(seed)
     T = len(history)
-    values = np.zeros((T, n_covariates))
+    values = np.zeros((T, 10))
 
-    # Covariate 0: correlated with the target (signal)
-    values[:, 0] = history * 0.8 + rng.normal(0, 5, size=T)
+    # 1. marketing_spend (strongly correlated, e.g. $10 spent per ~1 sale)
+    values[:, 0] = history * 10.0 + rng.normal(100, 50, size=T)
+    # 2. website_traffic (strongly correlated, e.g. 20 visits per 1 sale)
+    values[:, 1] = history * 20.0 + rng.normal(0, 200, size=T)
+    # 3. previous_day_sales (lagged)
+    values[1:, 2] = history[:-1]
+    values[0, 2] = history[0]
+    # 4. competitor_promotion_index (anti-correlated 0 to 100)
+    values[:, 3] = np.clip(100 - (history / 500.0) * 50 + rng.normal(0, 10, size=T), 0, 100)
+    # 5. price_discount_percentage (correlated 0 to 50%)
+    values[:, 4] = np.clip((history / 500.0) * 10 + rng.normal(0, 2, size=T), 0, 50)
+    # 6. holiday_proximity (correlated cyclical 1-10)
+    values[:, 5] = (np.sin(np.linspace(0, 4*np.pi, T)) + 1) * 4 + rng.normal(1, 0.5, size=T)
+    # 7. shipping_delay_hours (anti-correlated 0 to 72)
+    values[:, 6] = np.clip(72 - (history / 500.0) * 36 + rng.normal(0, 5, size=T), 0, 72)
+    # 8. social_media_mentions (correlated scale)
+    values[:, 7] = history * 2.5 + rng.normal(50, 20, size=T)
+    # 9. weather_temperature (noise 30 to 90 F)
+    values[:, 8] = rng.uniform(30, 90, size=T)
+    # 10. random_sensor_noise (pure noise)
+    values[:, 9] = rng.normal(0, 1, size=T)
 
-    # Covariate 1: lagged version
-    values[1:, 1] = history[:-1] * 0.5 + rng.normal(0, 3, size=T - 1)
-    values[0, 1] = values[1, 1]
-
-    # Covariate 2: pure noise
-    values[:, 2] = rng.normal(50, 10, size=T)
-
-    # Covariate 3: weak anti-correlation
-    if n_covariates > 3:
-        values[:, 3] = -history * 0.2 + rng.normal(0, 8, size=T)
-
-    names = ["correlated_signal", "lagged_signal", "noise", "anti_correlated"][:n_covariates]
+    names = [
+        "marketing_spend", "website_traffic", "previous_day_sales", 
+        "competitor_promotion_index", "price_discount_percentage", 
+        "holiday_proximity", "shipping_delay_hours", 
+        "social_media_mentions", "weather_temperature", "random_sensor_noise"
+    ]
     descriptions = {
-        "correlated_signal": "Strongly correlated with target",
-        "lagged_signal": "One-step lagged version of target",
-        "noise": "Pure random noise (control)",
-        "anti_correlated": "Weakly anti-correlated with target",
+        "marketing_spend": "Daily marketing spend in USD",
+        "website_traffic": "Total unique daily website visitors",
+        "previous_day_sales": "Unit sales from the previous day",
+        "competitor_promotion_index": "Intensity of competitor discounts (0-100)",
+        "price_discount_percentage": "Average discount applied to products (%)",
+        "holiday_proximity": "Proximity to major shopping holidays (0-10 scale)",
+        "shipping_delay_hours": "Average network shipping delay in hours",
+        "social_media_mentions": "Total brand mentions across social platforms",
+        "weather_temperature": "Average national daily temperature (F)",
+        "random_sensor_noise": "Unrelated control metric noise",
     }
 
     return CovariateSet(
         names=names,
         values=values,
-        descriptions={k: descriptions[k] for k in names},
+        descriptions=descriptions,
     )
 
 

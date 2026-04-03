@@ -181,20 +181,32 @@ def run_evaluation(
     scorer = NLIConsistencyScorer()
 
     template_verbalizer = TemplateVerbalizer(seed=seed)
-    llm_verbalizer = LLMVerbalizer(template_verbalizer=template_verbalizer)
-
-    pipe_template = VerbalizationPipeline(
-        forecast_provider=provider,
-        verbalizer=template_verbalizer,
-        scorer=scorer,
-        config=config,
-    )
-    pipe_llm = VerbalizationPipeline(
-        forecast_provider=provider,
-        verbalizer=llm_verbalizer,
-        scorer=scorer,
-        config=config,
-    )
+    
+    try:
+        from extension_1.verbalizer import LLMVerbalizer
+        llm_guided = LLMVerbalizer(template_verbalizer=template_verbalizer, use_rst_guidance=True)
+        llm_raw = LLMVerbalizer(template_verbalizer=template_verbalizer, use_rst_guidance=False)
+        
+        pipe_template = VerbalizationPipeline(
+            forecast_provider=provider, verbalizer=template_verbalizer, scorer=scorer, config=config,
+        )
+        pipe_llm_guided = VerbalizationPipeline(
+            forecast_provider=provider, verbalizer=llm_guided, scorer=scorer, config=config,
+        )
+        pipe_llm_raw = VerbalizationPipeline(
+            forecast_provider=provider, verbalizer=llm_raw, scorer=scorer, config=config,
+        )
+        pipelines_to_run = [
+            ("Template", pipe_template),
+            ("LLM Guided", pipe_llm_guided),
+            ("LLM Raw", pipe_llm_raw)  
+        ]
+    except Exception as e:
+        logger.warning(f"Could not load LLMs: {e}")
+        pipe_template = VerbalizationPipeline(
+            forecast_provider=provider, verbalizer=template_verbalizer, scorer=scorer, config=config,
+        )
+        pipelines_to_run = [("Template", pipe_template)]
 
     records: list[dict] = []
 
@@ -202,10 +214,10 @@ def run_evaluation(
         covariates = None
         if use_covariates:
             covariates = generate_synthetic_covariates(
-                history, n_covariates=4, seed=per_seed,
+                history, n_covariates=10, seed=per_seed,
             )
 
-        for v_type, pipe in [("Template", pipe_template)]:
+        for v_type, pipe in pipelines_to_run:
             result = pipe.run(history, covariates=covariates)
 
             # Per-sentence scores

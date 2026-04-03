@@ -444,10 +444,12 @@ class LLMVerbalizer:
     def __init__(
         self,
         template_verbalizer: Optional[TemplateVerbalizer] = None,
-        model_id: str = "google/gemma-4-E2B-it"
+        model_id: str = "Qwen/Qwen1.5-1.8B-Chat",
+        use_rst_guidance: bool = True
     ) -> None:
         self.template_verbalizer = template_verbalizer or TemplateVerbalizer()
         self.model_id = model_id
+        self.use_rst_guidance = use_rst_guidance
         self._processor = None
         self._model = None
 
@@ -476,8 +478,12 @@ class LLMVerbalizer:
         self._load_model()
         
         # 1. Get draft
-        template_result = self.template_verbalizer.verbalize(features, attribution)
-        prompt = self.build_refinement_prompt(features, template_result, attribution)
+        if self.use_rst_guidance:
+            template_result = self.template_verbalizer.verbalize(features, attribution)
+            prompt = self.build_refinement_prompt(features, template_result, attribution)
+        else:
+            template_result = None
+            prompt = self.build_refinement_prompt(features, None, attribution)
         
         # 2. Process
         messages = [
@@ -520,16 +526,25 @@ class LLMVerbalizer:
         sentences = [s.strip() + "." for s in response.split(".") if s.strip()]
         grounding = {}
         for i, _ in enumerate(sentences):
-            grounding[f"sentence_{i}"] = {
-                "type": "combined",
-                "groundings": list(template_result.grounding.values())
-            }
+            if self.use_rst_guidance:
+                grounding[f"sentence_{i}"] = {
+                    "type": "combined",
+                    "groundings": list(template_result.grounding.values())
+                }
+            else:
+                grounding[f"sentence_{i}"] = {
+                    "type": "feature",
+                    "feature": "raw_llm_generation",
+                    "value": "unguided"
+                }
+
+        rst_relations = template_result.rst_relations if self.use_rst_guidance and hasattr(template_result, 'rst_relations') else []
             
         return VerbalizationResult(
             summary=response,
             sentences=sentences,
             grounding=grounding,
-            rst_relations=template_result.rst_relations
+            rst_relations=rst_relations
         )
 
     def build_grounding_triples(
@@ -595,6 +610,34 @@ class LLMVerbalizer:
         str
             A ready-to-send prompt string.
         """
+        features_str = "\n".join(
+            f"  - {k}: {v}" for k, v in features.to_dict().items()
+            if k != "threshold_breaches"
+        )
+        
+        shared_constraints = (
+            "IMPORTANT CONSTRAINTS:\n"
+            "1. You MUST strictly preserve all numerical facts (e.g., trend direction, exact percentages, uncertainty levels).\n"
+            "2. Do NOT add any new information, assumptions, or external context (like 'economic downturns') that is not present in the Numerical Features.\n"
+            "3. Ensure the tone is objective, analytical, and concise.\n"
+            "4. Your final output should be ONLY the summary paragraph with no additional intro/outro text (e.g., no 'In summary...').\n"
+            "5. CRITICAL: Do NOT attempt to perform any mathematical reasoning. Do NOT change the positive/negative signs of any numbers.\n"
+            "6. Do NOT format as a list or bullet points. Output exclusively continuous flowing sentences.\n"
+        )
+        
+        if not self.use_rst_guidance:
+            prompt = (
+                "You are an expert financial analyst. Write a highly professional, cohesive paragraph summarizing the following time-series forecast metrics.\n\n"
+                f"{shared_constraints}\n"
+                "### Numerical Features\n"
+                f"{features_str}\n\n"
+            )
+            if attribution and attribution.attributions:
+                prompt += "### SHAP Covariate Impact\n"
+                for attr in attribution.attributions[:5]:
+                    prompt += f"  - {attr.name}: {attr.relative_impact_pct:.1f}% ({'positive' if attr.direction == 'positive' else 'negative'} impact)\n"
+            return prompt
+
         if template_result is None:
             template_result = self.template_verbalizer.verbalize(
                 features, attribution=attribution,
@@ -605,19 +648,10 @@ class LLMVerbalizer:
             f"  ({s}, {p}, {o})" for s, p, o in triples
         )
 
-        features_str = "\n".join(
-            f"  - {k}: {v}" for k, v in features.to_dict().items()
-            if k != "threshold_breaches"
-        )
-
         prompt = (
             "Please rewrite the following Draft Summary of a time-series forecast to sound more natural, fluent, and professional. "
             "The Draft Summary was currently generated from a template and might feel slightly rigid.\n\n"
-            "IMPORTANT CONSTRAINTS:\n"
-            "1. You MUST preserve all factual claims exactly as they appear in the draft (e.g., trend direction, uncertainty levels, exact percentages).\n"
-            "2. Do NOT add any new information, assumptions, or external context that is not present in the Numerical Features.\n"
-            "3. Ensure the tone is objective, analytical, and concise.\n"
-            "4. Your final output should be ONLY the completely rewritten summary paragraph with no additional intro/outro text.\n\n"
+            f"{shared_constraints}\n"
             "### Numerical Features (For Context)\n"
             f"{features_str}\n\n"
             "### Structured Grounding Facts (Must be preserved)\n"
