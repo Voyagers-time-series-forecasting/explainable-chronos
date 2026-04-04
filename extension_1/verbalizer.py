@@ -602,15 +602,15 @@ class LLMVerbalizer:
             if k != "threshold_breaches"
         )
         
-        shared_constraints = (
+        constraints = (
             "IMPORTANT CONSTRAINTS (FOR STRICT NLI ENTAILMENT):\n"
-            "1. You MUST strictly preserve all numerical facts (trend direction, exact percentages, uncertainties).\n"
-            "2. Do NOT add ANY new information, assumptions, or business context (e.g., 'economic downturns').\n"
-            "3. Your final output should be strictly the rewritten paragraph with NO intro or outro text.\n"
-            "4. CRITICAL: Do NOT perform any mathematical reasoning. Do NOT change positive/negative signs.\n"
-            "5. CRITICAL: Do NOT infer causality unless explicitly stated in the draft. Do NOT use phrases like 'because of X, Y happened' unless the draft explicitly says so.\n"
-            "6. Keep lexical similarity high with the original draft. Your output will be scored by a strict Natural Language Inference model. Hallucinating logic will result in immediate failure.\n"
-            "7. Do NOT format as a list or bullet points. Output exclusively continuous sentences.\n"
+            "1. EXACT LEXICAL PRESERVATION: You MUST strictly preserve the exact variable names (e.g., 'marketing_spend') without translating them to casual synonyms.\n"
+            "2. BAN CAUSAL WORDS: Do NOT use causality markers like 'therefore', 'because', 'caused', 'resulted in', or 'due to'. Use ONLY passive associations (e.g., 'contributing', 'associated with').\n"
+            "3. ZERO FLUFF: Do NOT add introductory clauses (e.g., 'Interestingly,'), transition adverbs, business context, or concluding thoughts. Output ONLY raw facts.\n"
+            "4. DO NOT COMBINE FACTS: Keep the sentence structure simple. Do not combine logic heavily; let the sentences mirror the draft exactly.\n"
+            "5. CRITICAL: Do NOT perform any mathematical reasoning. Do NOT change positive/negative signs.\n"
+            "6. Your output will be scored by a strict Natural Language Inference bot. Hallucinating logic or using creative synonyms will result in immediate failure.\n"
+            "7. Do NOT form lists or bullet points. Output exclusively continuous sentences.\n"
         )
 
         if template_result is None:
@@ -625,7 +625,7 @@ class LLMVerbalizer:
 
         prompt = (
             "Please perform a gentle grammatical rewrite of the following Draft Summary. Ensure it sounds natural and fluent, while strictly remaining an exact factual carbon-copy.\n\n"
-            f"{shared_constraints}\n"
+            f"{constraints}\n"
             "### Numerical Features (For Context)\n"
             f"{features_str}\n\n"
             "### Structured Grounding Facts (Must be exactly entailed)\n"
