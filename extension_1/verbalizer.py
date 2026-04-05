@@ -444,12 +444,10 @@ class LLMVerbalizer:
     def __init__(
         self,
         template_verbalizer: Optional[TemplateVerbalizer] = None,
-        model_id: str = "Qwen/Qwen1.5-1.8B-Chat",
-        use_rst_guidance: bool = True
+        model_id: str = "Qwen/Qwen1.5-1.8B-Chat"
     ) -> None:
         self.template_verbalizer = template_verbalizer or TemplateVerbalizer()
         self.model_id = model_id
-        self.use_rst_guidance = use_rst_guidance
         self._processor = None
         self._model = None
 
@@ -478,12 +476,8 @@ class LLMVerbalizer:
         self._load_model()
         
         # 1. Get draft
-        if self.use_rst_guidance:
-            template_result = self.template_verbalizer.verbalize(features, attribution)
-            prompt = self.build_refinement_prompt(features, template_result, attribution)
-        else:
-            template_result = None
-            prompt = self.build_refinement_prompt(features, None, attribution)
+        template_result = self.template_verbalizer.verbalize(features, attribution)
+        prompt = self.build_refinement_prompt(features, template_result, attribution)
         
         # 2. Process
         messages = [
@@ -526,19 +520,12 @@ class LLMVerbalizer:
         sentences = [s.strip() + "." for s in response.split(".") if s.strip()]
         grounding = {}
         for i, _ in enumerate(sentences):
-            if self.use_rst_guidance:
-                grounding[f"sentence_{i}"] = {
-                    "type": "combined",
-                    "groundings": list(template_result.grounding.values())
-                }
-            else:
-                grounding[f"sentence_{i}"] = {
-                    "type": "feature",
-                    "feature": "raw_llm_generation",
-                    "value": "unguided"
-                }
+            grounding[f"sentence_{i}"] = {
+                "type": "combined",
+                "groundings": list(template_result.grounding.values())
+            }
 
-        rst_relations = template_result.rst_relations if self.use_rst_guidance and hasattr(template_result, 'rst_relations') else []
+        rst_relations = template_result.rst_relations if hasattr(template_result, 'rst_relations') else []
             
         return VerbalizationResult(
             summary=response,
@@ -615,28 +602,16 @@ class LLMVerbalizer:
             if k != "threshold_breaches"
         )
         
-        shared_constraints = (
-            "IMPORTANT CONSTRAINTS:\n"
-            "1. You MUST strictly preserve all numerical facts (e.g., trend direction, exact percentages, uncertainty levels).\n"
-            "2. Do NOT add any new information, assumptions, or external context (like 'economic downturns') that is not present in the Numerical Features.\n"
-            "3. Ensure the tone is objective, analytical, and concise.\n"
-            "4. Your final output should be ONLY the summary paragraph with no additional intro/outro text (e.g., no 'In summary...').\n"
-            "5. CRITICAL: Do NOT attempt to perform any mathematical reasoning. Do NOT change the positive/negative signs of any numbers.\n"
-            "6. Do NOT format as a list or bullet points. Output exclusively continuous flowing sentences.\n"
+        constraints = (
+            "IMPORTANT CONSTRAINTS (FOR STRICT NLI ENTAILMENT):\n"
+            "1. EXACT LEXICAL PRESERVATION: You MUST strictly preserve the exact variable names (e.g., 'marketing_spend') without translating them to casual synonyms.\n"
+            "2. BAN CAUSAL WORDS: Do NOT use causality markers like 'therefore', 'because', 'caused', 'resulted in', or 'due to'. Use ONLY passive associations (e.g., 'contributing', 'associated with').\n"
+            "3. ZERO FLUFF: Do NOT add introductory clauses (e.g., 'Interestingly,'), transition adverbs, business context, or concluding thoughts. Output ONLY raw facts.\n"
+            "4. DO NOT COMBINE FACTS: Keep the sentence structure simple. Do not combine logic heavily; let the sentences mirror the draft exactly.\n"
+            "5. CRITICAL: Do NOT perform any mathematical reasoning. Do NOT change positive/negative signs.\n"
+            "6. Your output will be scored by a strict Natural Language Inference bot. Hallucinating logic or using creative synonyms will result in immediate failure.\n"
+            "7. Do NOT form lists or bullet points. Output exclusively continuous sentences.\n"
         )
-        
-        if not self.use_rst_guidance:
-            prompt = (
-                "You are an expert financial analyst. Write a highly professional, cohesive paragraph summarizing the following time-series forecast metrics.\n\n"
-                f"{shared_constraints}\n"
-                "### Numerical Features\n"
-                f"{features_str}\n\n"
-            )
-            if attribution and attribution.attributions:
-                prompt += "### SHAP Covariate Impact\n"
-                for attr in attribution.attributions[:5]:
-                    prompt += f"  - {attr.name}: {attr.relative_impact_pct:.1f}% ({'positive' if attr.direction == 'positive' else 'negative'} impact)\n"
-            return prompt
 
         if template_result is None:
             template_result = self.template_verbalizer.verbalize(
@@ -649,12 +624,11 @@ class LLMVerbalizer:
         )
 
         prompt = (
-            "Please rewrite the following Draft Summary of a time-series forecast to sound more natural, fluent, and professional. "
-            "The Draft Summary was currently generated from a template and might feel slightly rigid.\n\n"
-            f"{shared_constraints}\n"
+            "Please perform a gentle grammatical rewrite of the following Draft Summary. Ensure it sounds natural and fluent, while strictly remaining an exact factual carbon-copy.\n\n"
+            f"{constraints}\n"
             "### Numerical Features (For Context)\n"
             f"{features_str}\n\n"
-            "### Structured Grounding Facts (Must be preserved)\n"
+            "### Structured Grounding Facts (Must be exactly entailed)\n"
             f"{triples_str}\n\n"
             "### Draft Summary (To Rewrite)\n"
             f"{template_result.summary}\n"
