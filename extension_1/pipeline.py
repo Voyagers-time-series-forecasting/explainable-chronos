@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ from consistency_scorer import ConsistencyReport, NLIConsistencyScorer
 from covariate_attribution import AttributionResult, CovariateSet, SurrogateExplainer
 from feature_extractor import ForecastFeatures, extract_features
 from shared.forecast_provider import ChronosForecastProvider, ForecastDict
-from verbalizer import TemplateVerbalizer, VerbalizationResult
+from verbalizer import TemplateVerbalizer, VerbalizationResult, LLMVerbalizer
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class VerbalizationPipeline:
     def __init__(
         self,
         forecast_provider: ChronosForecastProvider,
-        verbalizer: TemplateVerbalizer,
+        verbalizer: Union[TemplateVerbalizer, LLMVerbalizer],
         scorer: NLIConsistencyScorer,
         config: Optional[PipelineConfig] = None,
     ) -> None:
