@@ -77,6 +77,8 @@ class ChronosForecastProvider:
         self,
         history: np.ndarray | pd.Series,
         horizon: int = 14,
+        past_covariates: dict | None = None,
+        future_covariates: dict | None = None,
     ) -> ForecastDict:
         """Produce quantile forecasts (P10, P50, P90).
 
@@ -86,16 +88,50 @@ class ChronosForecastProvider:
             1-D historical time-series values.
         horizon : int
             Forecast horizon in steps.
+        past_covariates : dict, optional
+            Dictionary of past covariate arrays, each of length
+            equal to len(history). Keys are covariate names.
+        future_covariates : dict, optional
+            Dictionary of future covariate arrays, each of length
+            equal to horizon. Must be a subset of past_covariates keys.
 
         Returns
         -------
         ForecastDict
-            Keys: ``timestamps``, ``p10``, ``p50``, ``p90``, ``history_tail``.
+            Keys: timestamps, p10, p50, p90, history_tail.
         """
         pipe = self._load_pipeline()
         history_arr = np.asarray(history, dtype=np.float64)
-        context = torch.tensor(history_arr, dtype=torch.float32).reshape(1, 1, -1)
-        forecast = pipe.predict(context, prediction_length=horizon)
+
+        # Build input — with or without covariates
+        if past_covariates is not None:
+            cov_input: dict = {
+                "target": torch.tensor(history_arr, dtype=torch.float32),
+                "past_covariates": {
+                    k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
+                    for k, v in past_covariates.items()
+                },
+            }
+            if future_covariates is not None:
+                cov_input["future_covariates"] = {
+                    k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
+                    for k, v in future_covariates.items()
+                }
+            inputs = [cov_input]
+            logger.info(
+                "Predicting with %d past covariates%s.",
+                len(past_covariates),
+                f" and {len(future_covariates)} future covariates"
+                if future_covariates else "",
+            )
+        else:
+            # Original univariate path — unchanged
+            inputs = torch.tensor(
+                history_arr, dtype=torch.float32
+            ).reshape(1, 1, -1)
+            logger.info("Predicting univariate (no covariates).")
+
+        forecast = pipe.predict(inputs, prediction_length=horizon)
 
         # Handle list-of-tensors or tensor output
         if isinstance(forecast, list):
@@ -117,5 +153,6 @@ class ChronosForecastProvider:
             "p10": np.quantile(samples, 0.1, axis=0),
             "p50": np.quantile(samples, 0.5, axis=0),
             "p90": np.quantile(samples, 0.9, axis=0),
-            "history_tail": history_arr[-self.history_tail_length :],
+            "history_tail": history_arr[-self.history_tail_length:],
         }
+    

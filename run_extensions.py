@@ -18,19 +18,23 @@ import numpy as np
 from shared.forecast_provider import ChronosForecastProvider
 
 
-def run_ext1_demo(seed: int = 42) -> None:
-    """Run Extension 1 (Forecast Narration) demo."""
+def run_ext1_demo(seed: int = 42, with_covariates: bool = False) -> None:
+    """Run Extension 1 demo, optionally with synthetic covariates."""
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
 
     from extension_1.config import PipelineConfig
     from extension_1.pipeline import VerbalizationPipeline
     from extension_1.verbalizer import TemplateVerbalizer
     from extension_1.consistency_scorer import NLIConsistencyScorer
-    from shared.data_generators import generate_demo_time_series
-
+    from shared.forecast_provider import ChronosForecastProvider
+    from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
 
     config = PipelineConfig(seed=seed)
-    history = generate_demo_time_series(seed=seed, length=30)
+    history = generate_demo_time_series(seed=seed, length=50)
+    covariates = None
+
+    if with_covariates:
+        covariates = generate_synthetic_covariates(history, seed=seed)
 
     pipeline = VerbalizationPipeline(
         forecast_provider=ChronosForecastProvider(),
@@ -38,11 +42,11 @@ def run_ext1_demo(seed: int = 42) -> None:
         scorer=NLIConsistencyScorer(),
         config=config,
     )
-    result = pipeline.run(history)
+    result = pipeline.run(history, covariates=covariates)
 
-    # Pretty-print
+    title = "WITH COVARIATES" if with_covariates else "UNIVARIATE"
     print("\n" + "=" * 65)
-    print("  EXTENSION 1 — FORECAST VERBALIZATION REPORT")
+    print(f"  EXTENSION 1 — FORECAST VERBALIZATION REPORT ({title})")
     print("=" * 65)
     print(
         f"\n  Trend      : {result.features.trend_magnitude} "
@@ -56,6 +60,13 @@ def run_ext1_demo(seed: int = 42) -> None:
     print(f"  Downside   : {result.features.downside_risk}")
     print(f"  Upside     : {result.features.upside_potential}")
     print(f"  Regime shift: {result.features.regime_shift}")
+
+    if result.attribution:
+        print(f"\n  Top covariates:")
+        for attr in result.attribution.attributions[:3]:
+            print(f"   - {attr.name}: {attr.relative_impact_pct:.1f}% ({attr.direction})")
+        print(f"   Surrogate R²: {result.attribution.surrogate_r2:.4f}")
+
     print(f"\n  Summary:\n   {result.verbalization.summary}")
     print(
         f"\n  Consistency : {result.consistency_report.overall_score:.4f} "
@@ -90,15 +101,24 @@ def main() -> None:
         choices=["demo", "evaluate"],
         help="Action to perform",
     )
+    parser.add_argument(
+        "--covariates",
+        action="store_true",
+        default=False,
+        help="Include synthetic covariates in the demo",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
     dispatch = {
-        ("ext1", "demo"): lambda: run_ext1_demo(seed=args.seed),
-        ("ext1", "evaluate"): run_ext1_evaluate,
-    }
+    ("ext1", "demo"): lambda: run_ext1_demo(
+        seed=args.seed,
+        with_covariates=args.covariates,
+    ),
+    ("ext1", "evaluate"): run_ext1_evaluate,
+}
     dispatch[(args.extension, args.action)]()
 
 

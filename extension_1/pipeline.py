@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ from consistency_scorer import ConsistencyReport, NLIConsistencyScorer
 from covariate_attribution import AttributionResult, CovariateSet, SurrogateExplainer
 from feature_extractor import ForecastFeatures, extract_features
 from shared.forecast_provider import ChronosForecastProvider, ForecastDict
-from verbalizer import TemplateVerbalizer, VerbalizationResult
+from verbalizer import TemplateVerbalizer, VerbalizationResult, LLMVerbalizer
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class VerbalizationPipeline:
     def __init__(
         self,
         forecast_provider: ChronosForecastProvider,
-        verbalizer: TemplateVerbalizer,
+        verbalizer: Union[TemplateVerbalizer, LLMVerbalizer],
         scorer: NLIConsistencyScorer,
         config: Optional[PipelineConfig] = None,
     ) -> None:
@@ -105,7 +105,19 @@ class VerbalizationPipeline:
         logger.info("Running pipeline with horizon=%d …", h)
 
         # Stage A — Forecast
-        forecast = self.forecast_provider.predict(time_series, horizon=h)
+        # Stage A — Forecast
+        past_cov = None
+        if covariates is not None:
+            past_cov = {
+                name: covariates.values[:, i]
+                for i, name in enumerate(covariates.names)
+            }
+
+        forecast = self.forecast_provider.predict(
+                time_series,
+                horizon=h,
+                past_covariates=past_cov,
+        )
         logger.info("Forecast produced (P10/P50/P90 × %d steps).", h)
 
         # Stage A — Feature extraction

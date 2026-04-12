@@ -47,10 +47,6 @@ logger = logging.getLogger(__name__)
 EVAL_DIR = Path(__file__).resolve().parent / "eval_results"
 
 
-# ──────────────── scenario generator ──────────────────────────────────
-# (Imported from shared.data_generators)
-
-
 # ──────────── quantile faithfulness check ─────────────────────────────
 def check_faithfulness(
     features: Any,
@@ -180,26 +176,50 @@ def run_evaluation(
     provider = ChronosForecastProvider()
     scorer = NLIConsistencyScorer()
 
+    # FIX 1: create separate TemplateVerbalizer instances for each pipeline
+    # to avoid shared mutable state between LLMVerbalizer instances.
     template_verbalizer = TemplateVerbalizer(seed=seed)
-    
+
     try:
-        from extension_1.verbalizer import LLMVerbalizer
-        llm_guided = LLMVerbalizer(template_verbalizer=template_verbalizer)
-        
+        llm_guided = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            use_rst_guidance=True,
+        )
+        llm_raw = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            use_rst_guidance=False,
+        )
+
         pipe_template = VerbalizationPipeline(
-            forecast_provider=provider, verbalizer=template_verbalizer, scorer=scorer, config=config,
+            forecast_provider=provider,
+            verbalizer=template_verbalizer,
+            scorer=scorer,
+            config=config,
         )
         pipe_llm_guided = VerbalizationPipeline(
-            forecast_provider=provider, verbalizer=llm_guided, scorer=scorer, config=config,
+            forecast_provider=provider,
+            verbalizer=llm_guided,
+            scorer=scorer,
+            config=config,
+        )
+        pipe_llm_raw = VerbalizationPipeline(
+            forecast_provider=provider,
+            verbalizer=llm_raw,
+            scorer=scorer,
+            config=config,
         )
         pipelines_to_run = [
             ("Template", pipe_template),
-            ("LLM Guided", pipe_llm_guided)
+            ("LLM Guided", pipe_llm_guided),
+            ("LLM Raw", pipe_llm_raw),
         ]
     except Exception as e:
-        logger.warning(f"Could not load LLMs: {e}")
+        logger.warning("Could not load LLMs: %s — running Template only.", e)
         pipe_template = VerbalizationPipeline(
-            forecast_provider=provider, verbalizer=template_verbalizer, scorer=scorer, config=config,
+            forecast_provider=provider,
+            verbalizer=template_verbalizer,
+            scorer=scorer,
+            config=config,
         )
         pipelines_to_run = [("Template", pipe_template)]
 
@@ -213,7 +233,7 @@ def run_evaluation(
             )
 
         for v_type, pipe in pipelines_to_run:
-            result = pipe.run(history, covariates=covariates)
+            result = pipe.run(history, horizon=len(future), covariates=covariates)
 
             # Per-sentence scores
             sent_scores = [
@@ -283,7 +303,7 @@ def run_evaluation(
 
 # ══════════════════ reporting & visualization ═════════════════════════
 def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
-    """Generate evaluation visualizations (5+ subplots).
+    """Generate evaluation visualizations.
 
     Parameters
     ----------
@@ -299,51 +319,56 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     """
     save_path = save_dir / "evaluation_plots.png"
     has_covariates = "surrogate_r2" in df.columns and df["surrogate_r2"].notna().any()
-    n_plots = 5 if has_covariates else 4
-    fig, axes = plt.subplots(2, 3 if has_covariates else 2, figsize=(18, 10))
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.ravel()
 
     scenario_types = sorted(df["scenario_type"].unique())
-    colors = {"trending": "#4c72b0", "volatile": "#dd8452", "flat": "#55a868"}
+    scenario_colors = {"trending": "#4c72b0", "volatile": "#dd8452", "flat": "#55a868"}
 
-    # 1. Box plot — consistency by scenario type
+    # FIX 2: Plot 1 — boxplot by verbalizer_type, not scenario_type.
+    # This correctly separates the three pipeline approaches.
+    v_types = sorted(df["verbalizer_type"].unique())
+    v_colors = {"Template": "#4c72b0", "LLM Guided": "#dd8452", "LLM Raw": "#55a868"}
     data_groups = [
-        df.loc[df["scenario_type"] == st, "overall_consistency"].values
-        for st in scenario_types
+        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].to_numpy()
+        for vt in v_types
     ]
-    bp = axes[0].boxplot(data_groups, tick_labels=scenario_types, patch_artist=True)
-    for patch, st in zip(bp["boxes"], scenario_types):
-        patch.set_facecolor(colors.get(st, "grey"))
+    bp = axes[0].boxplot(data_groups, tick_labels=v_types, patch_artist=True)
+    for patch, vt in zip(bp["boxes"], v_types):
+        patch.set_facecolor(v_colors.get(vt, "grey"))
         patch.set_alpha(0.7)
-    axes[0].set_title("Consistency by Scenario Type")
+    axes[0].set_title("Consistency by Verbalizer Type")
     axes[0].set_ylabel("Entailment Score")
-    axes[0].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold")
+    axes[0].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold (0.70)")
     axes[0].legend()
 
-    # 2. Scatter — scenario_idx vs consistency
-    for st in scenario_types:
-        subset = df[df["scenario_type"] == st]
+    # Plot 2 — scatter: scenario_idx vs consistency, coloured by verbalizer_type
+    for vt in v_types:
+        subset = df[df["verbalizer_type"] == vt]
         axes[1].scatter(
             subset["scenario_idx"], subset["overall_consistency"],
-            label=st, alpha=0.7, color=colors.get(st, "grey"),
+            label=vt, alpha=0.7, color=v_colors.get(vt, "grey"),
             edgecolors="w", linewidth=0.5,
         )
     axes[1].axhline(0.7, color="red", linestyle="--", alpha=0.5)
-    axes[1].set_title("Consistency per Scenario")
+    axes[1].set_title("Consistency per Scenario (by Verbalizer)")
     axes[1].set_xlabel("Scenario Index")
     axes[1].set_ylabel("Consistency Score")
     axes[1].legend()
 
-    # 3. Histogram — per-sentence entailment scores
+    # Plot 3 — histogram: per-sentence entailment scores
     sent_cols = [c for c in df.columns if c.startswith("sent_") and c.endswith("_score")]
     all_sent_scores = []
     for col in sent_cols:
-        all_sent_scores.extend(df[col].dropna().values.tolist())
+        all_sent_scores.extend(df[col].dropna().to_numpy().tolist())
     if all_sent_scores:
-        axes[2].hist(all_sent_scores, bins=np.arange(0, 1.05, 0.05),
-                     color="#4c72b0", alpha=0.7, edgecolor="white")
-        mean_s = np.mean(all_sent_scores)
-        med_s = np.median(all_sent_scores)
+        axes[2].hist(
+            all_sent_scores, bins=np.arange(0, 1.05, 0.05),
+            color="#4c72b0", alpha=0.7, edgecolor="white",
+        )
+        mean_s = float(np.mean(all_sent_scores))
+        med_s = float(np.median(all_sent_scores))
         axes[2].axvline(mean_s, color="red", linestyle="-", label=f"mean={mean_s:.2f}")
         axes[2].axvline(med_s, color="orange", linestyle="--", label=f"median={med_s:.2f}")
         axes[2].legend()
@@ -351,13 +376,13 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes[2].set_xlabel("Entailment Probability")
     axes[2].set_ylabel("Count")
 
-    # 4. Bar chart — feature distribution
+    # Plot 4 — bar: feature value distribution
     feat_cols = ["trend_direction", "uncertainty_level", "asymmetry_label"]
     all_cats: Dict[str, int] = {}
     for col in feat_cols:
         if col in df.columns:
             for val, cnt in df[col].value_counts().items():
-                all_cats[f"{col}:{val}"] = cnt
+                all_cats[f"{col}:{val}"] = int(cnt)
     if all_cats:
         bars = list(all_cats.keys())
         vals = list(all_cats.values())
@@ -365,37 +390,37 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
         axes[3].set_title("Feature Value Distribution")
         axes[3].set_xlabel("Count")
 
-    # 5. Coverage vs Consistency scatter (forecast accuracy)
+    # Plot 5 — scatter: coverage % vs consistency, coloured by scenario type
     if "coverage_pct" in df.columns:
-        ax_cov = axes[4] if has_covariates else axes[3]
-        # Use axes[4] for coverage scatter
-        if len(axes) > 4:
-            for st in scenario_types:
-                subset = df[df["scenario_type"] == st]
-                axes[4].scatter(
-                    subset["coverage_pct"], subset["overall_consistency"],
-                    label=st, alpha=0.7, color=colors.get(st, "grey"),
-                    edgecolors="w", linewidth=0.5,
-                )
-            axes[4].set_title("Coverage vs Consistency")
-            axes[4].set_xlabel("Coverage %")
-            axes[4].set_ylabel("Consistency Score")
-            axes[4].legend()
+        for st in scenario_types:
+            subset = df[df["scenario_type"] == st]
+            axes[4].scatter(
+                subset["coverage_pct"], subset["overall_consistency"],
+                label=st, alpha=0.7, color=scenario_colors.get(st, "grey"),
+                edgecolors="w", linewidth=0.5,
+            )
+        axes[4].axhline(0.7, color="red", linestyle="--", alpha=0.5)
+        axes[4].set_title("Coverage vs Consistency (by Scenario Type)")
+        axes[4].set_xlabel("Coverage %")
+        axes[4].set_ylabel("Consistency Score")
+        axes[4].legend()
 
-    # 6. SHAP bar chart (if covariates)
-    if has_covariates and len(axes) > 5:
+    # Plot 6 — bar: mean top covariate impact (only if covariates present)
+    if has_covariates:
         cov_df = df[df["top_covariate"].notna()]
         if not cov_df.empty:
-            mean_impact = cov_df.groupby("top_covariate")["top_covariate_impact_pct"].mean()
+            mean_impact = (
+                cov_df.groupby("top_covariate")["top_covariate_impact_pct"]
+                .mean()
+                .sort_values(ascending=False)
+            )
             axes[5].bar(mean_impact.index, mean_impact.values, color="#dd8452", alpha=0.7)
             axes[5].set_title("Mean Top Covariate Impact")
             axes[5].set_xlabel("Covariate")
             axes[5].set_ylabel("Relative Impact %")
             axes[5].tick_params(axis="x", rotation=30)
-
-    # Turn off unused axes
-    for i in range(n_plots, len(axes)):
-        axes[i].set_visible(False)
+    else:
+        axes[5].set_visible(False)
 
     plt.tight_layout()
     plt.savefig(str(save_path), dpi=300)
@@ -405,7 +430,7 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
 
 
 def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
-    """Write comprehensive markdown evaluation report (8+ sections).
+    """Write comprehensive markdown evaluation report.
 
     Parameters
     ----------
@@ -433,11 +458,13 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     # ── 1. Overview ───────────────────────────────────────────────
     lines.append("# Evaluation Report — Extension 1")
     lines.append("")
-    lines.append("> This evaluation separates two questions: "
-                 "(1) Is the explanation faithful to the forecast? "
-                 "(2) Is the forecast itself accurate? "
-                 "A high-scoring explanation of an inaccurate forecast "
-                 "is still a correct explanation.")
+    lines.append(
+        "> This evaluation separates two questions: "
+        "(1) Is the explanation faithful to the forecast? "
+        "(2) Is the forecast itself accurate? "
+        "A high-scoring explanation of an inaccurate forecast "
+        "is still a correct explanation."
+    )
     lines.append("")
     lines.append("## 1. Overview")
     lines.append("")
@@ -454,26 +481,41 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     lines.append(f"| % consistent (≥ 0.7) | {pct_consistent:.1f}% |")
     lines.append("")
 
-    # ── 2. Breakdown by scenario type ─────────────────────────────
-    lines.append("## 2. Breakdown by Scenario Type")
+    # ── 2. Breakdown by verbalizer type ───────────────────────────
+    lines.append("## 2. Breakdown by Verbalizer Type")
     lines.append("")
-    grouped = df.groupby("scenario_type")["overall_consistency"].agg(
+    grouped_v = df.groupby("verbalizer_type")["overall_consistency"].agg(
+        ["mean", "std", "min", "max", "count"]
+    )
+    lines.append("| Verbalizer | Mean | Std | Min | Max | Count |")
+    lines.append("|---|---|---|---|---|---|")
+    for vtype, row in grouped_v.iterrows():
+        lines.append(
+            f"| {vtype} | {row['mean']:.4f} | {row['std']:.4f} "
+            f"| {row['min']:.4f} | {row['max']:.4f} | {int(row['count'])} |"
+        )
+    lines.append("")
+
+    # ── 3. Breakdown by scenario type ─────────────────────────────
+    lines.append("## 3. Breakdown by Scenario Type")
+    lines.append("")
+    grouped_s = df.groupby("scenario_type")["overall_consistency"].agg(
         ["mean", "std", "min", "max", "count"]
     )
     lines.append("| Scenario | Mean | Std | Min | Max | Count |")
     lines.append("|---|---|---|---|---|---|")
-    for stype, row in grouped.iterrows():
+    for stype, row in grouped_s.iterrows():
         lines.append(
             f"| {stype} | {row['mean']:.4f} | {row['std']:.4f} "
             f"| {row['min']:.4f} | {row['max']:.4f} | {int(row['count'])} |"
         )
     lines.append("")
 
-    # ── 3. Feature distribution ───────────────────────────────────
-    lines.append("## 3. Feature Distribution")
+    # ── 4. Feature distribution ───────────────────────────────────
+    lines.append("## 4. Feature Distribution")
     lines.append("")
     for col in ["trend_direction", "trend_magnitude", "uncertainty_level",
-                 "uncertainty_trend", "asymmetry_label"]:
+                "uncertainty_trend", "asymmetry_label"]:
         if col in df.columns:
             counts = df[col].value_counts()
             lines.append(f"**{col}**: " + ", ".join(
@@ -485,17 +527,19 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     lines.append(f"- Regime shift detected: {df['regime_shift'].sum()} / {n}")
     lines.append("")
 
-    # ── 4. Covariate attribution summary ──────────────────────────
+    # ── 5. Covariate attribution summary ──────────────────────────
     if "surrogate_r2" in df.columns and df["surrogate_r2"].notna().any():
-        lines.append("## 4. Covariate Attribution Summary")
+        lines.append("## 5. Covariate Attribution Summary")
         lines.append("")
         cov_df = df[df["surrogate_r2"].notna()]
         lines.append(f"- Mean surrogate R²: {cov_df['surrogate_r2'].mean():.4f}")
         if "top_covariate" in cov_df.columns:
             top_counts = cov_df["top_covariate"].value_counts()
-            lines.append(f"- Top covariate distribution: " + ", ".join(
-                f"{v} ({c})" for v, c in top_counts.items()
-            ))
+            lines.append(
+                "- Top covariate distribution: " + ", ".join(
+                    f"{v} ({c})" for v, c in top_counts.items()
+                )
+            )
             if "top_covariate_impact_pct" in cov_df.columns:
                 lines.append(
                     f"- Mean top covariate impact: "
@@ -503,20 +547,20 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
                 )
         lines.append("")
 
-    # ── 5. Explanation Faithfulness ────────────────────────────────
-    lines.append("## 5. Explanation Faithfulness (NLI consistency + quantile round-trip)")
+    # ── 6. Explanation Faithfulness ────────────────────────────────
+    lines.append("## 6. Explanation Faithfulness (NLI consistency + quantile round-trip)")
     lines.append("")
     faith_col = "faithfulness_errors"
     if faith_col in df.columns:
-        n_errors = (df[faith_col] != "").sum()
+        n_errors = int((df[faith_col] != "").sum())
         lines.append(f"- Quantile round-trip mismatches: {n_errors} / {n}")
         if n_errors > 0:
             for _, row in df[df[faith_col] != ""].iterrows():
                 lines.append(f"  - Scenario {row['scenario_idx']}: {row[faith_col]}")
     lines.append("")
 
-    # ── 6. Forecast Accuracy ──────────────────────────────────────
-    lines.append("## 6. Forecast Accuracy (model vs. synthetic actuals)")
+    # ── 7. Forecast Accuracy ──────────────────────────────────────
+    lines.append("## 7. Forecast Accuracy (model vs. synthetic actuals)")
     lines.append("")
     if "mase" in df.columns:
         lines.append("| Metric | Mean | Std | Min | Max |")
@@ -530,11 +574,10 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
                 )
     lines.append("")
 
-    # ── 7. Lowest and highest scoring sentences ───────────────────
+    # ── 8. Lowest and highest scoring sentences ───────────────────
     sent_cols = [c for c in df.columns if c.startswith("sent_") and c.endswith("_score")]
-    lines.append("## 7. 5 Lowest-Scoring Sentences")
+    lines.append("## 8. 5 Lowest-Scoring Sentences")
     lines.append("")
-    # Collect all sentences with their scores
     all_sents: List[Dict[str, Any]] = []
     for _, row in df.iterrows():
         for sc in sent_cols:
@@ -543,27 +586,34 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
                     "score": row[sc],
                     "scenario_type": row["scenario_type"],
                     "scenario_idx": row["scenario_idx"],
+                    "verbalizer_type": row.get("verbalizer_type", ""),
                 })
     if all_sents:
         all_sents.sort(key=lambda x: x["score"])
-        lines.append("| Score | Scenario | Index |")
-        lines.append("|---|---|---|")
+        lines.append("| Score | Verbalizer | Scenario | Index |")
+        lines.append("|---|---|---|---|")
         for s in all_sents[:5]:
-            lines.append(f"| {s['score']:.3f} | {s['scenario_type']} | {s['scenario_idx']} |")
+            lines.append(
+                f"| {s['score']:.3f} | {s['verbalizer_type']} "
+                f"| {s['scenario_type']} | {s['scenario_idx']} |"
+            )
     lines.append("")
 
-    lines.append("## 8. 5 Highest-Scoring Sentences")
+    lines.append("## 9. 5 Highest-Scoring Sentences")
     lines.append("")
     if all_sents:
-        lines.append("| Score | Scenario | Index |")
-        lines.append("|---|---|---|")
+        lines.append("| Score | Verbalizer | Scenario | Index |")
+        lines.append("|---|---|---|---|")
         for s in all_sents[-5:]:
-            lines.append(f"| {s['score']:.3f} | {s['scenario_type']} | {s['scenario_idx']} |")
+            lines.append(
+                f"| {s['score']:.3f} | {s['verbalizer_type']} "
+                f"| {s['scenario_type']} | {s['scenario_idx']} |"
+            )
     lines.append("")
 
-    # ── 8. Failure analysis ───────────────────────────────────────
+    # ── 9. Failure analysis ───────────────────────────────────────
     failures = df[~df["is_consistent"]]
-    lines.append("## 9. Failure Analysis")
+    lines.append("## 10. Failure Analysis")
     lines.append("")
     if len(failures) == 0:
         lines.append("No failures — all scenarios passed the consistency threshold.")
@@ -571,7 +621,10 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
         lines.append(f"**{len(failures)} scenarios** scored below the 0.70 threshold:")
         lines.append("")
         for _, row in failures.iterrows():
-            lines.append(f"### Scenario {row['scenario_idx']} ({row['scenario_type']})")
+            lines.append(
+                f"### Scenario {row['scenario_idx']} "
+                f"({row['scenario_type']} / {row.get('verbalizer_type', '')})"
+            )
             lines.append(f"- Overall score: {row['overall_consistency']:.4f}")
             for sc in sent_cols:
                 if pd.notna(row.get(sc)):
@@ -579,8 +632,8 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
             lines.append("")
     lines.append("")
 
-    # ── 9. RST relation distribution ──────────────────────────────
-    lines.append("## 10. RST Relation Distribution")
+    # ── 10. RST relation distribution ─────────────────────────────
+    lines.append("## 11. RST Relation Distribution")
     lines.append("")
     if "rst_relations" in df.columns:
         all_rels: Dict[str, int] = {}
@@ -620,17 +673,22 @@ def print_report(df: pd.DataFrame) -> None:
     print(f"  Std consistency     : {df['overall_consistency'].std():.4f}")
     print(f"  Min consistency     : {df['overall_consistency'].min():.4f}")
     print(f"  Max consistency     : {df['overall_consistency'].max():.4f}")
-    print(f"  % consistent (>=0.7): "
-          f"{df['is_consistent'].mean() * 100:.1f}%")
+    print(
+        f"  % consistent (>=0.7): "
+        f"{df['is_consistent'].mean() * 100:.1f}%"
+    )
 
     if "mase" in df.columns:
         print(f"\n  Mean MASE           : {df['mase'].mean():.4f}")
         print(f"  Mean Coverage       : {df['coverage_pct'].mean():.1f}%")
 
+    print("\n  --- Breakdown by verbalizer type ---")
+    grouped_v = df.groupby("verbalizer_type")["overall_consistency"]
+    print(grouped_v.agg(["mean", "std", "min", "max", "count"]).to_string(float_format="%.4f"))
+
     print("\n  --- Breakdown by scenario type ---")
-    grouped = df.groupby("scenario_type")["overall_consistency"]
-    summary = grouped.agg(["mean", "std", "min", "max", "count"])
-    print(summary.to_string(float_format="%.4f"))
+    grouped_s = df.groupby("scenario_type")["overall_consistency"]
+    print(grouped_s.agg(["mean", "std", "min", "max", "count"]).to_string(float_format="%.4f"))
     print()
 
 
@@ -638,19 +696,48 @@ def print_report(df: pd.DataFrame) -> None:
 def main() -> None:
     """Entry point for evaluation (callable from run_extensions.py)."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
 
-    df = run_evaluation(n=EVAL_NUM_SCENARIOS, seed=RANDOM_SEED, use_covariates=True)
-    print_report(df)
-    plot_results(df, save_dir=EVAL_DIR)
+    # Run 1 — univariato
+    logger.info("=== Running evaluation WITHOUT covariates ===")
+    df_no_cov = run_evaluation(
+        n=EVAL_NUM_SCENARIOS, seed=RANDOM_SEED, use_covariates=False
+    )
+    df_no_cov["covariate_mode"] = "univariate"
 
-    csv_path = EVAL_DIR / "evaluation_results.csv"
-    df.to_csv(csv_path, index=False)
-    logger.info("Raw results saved to %s", csv_path)
+    # Run 2 — con covariate
+    logger.info("=== Running evaluation WITH covariates ===")
+    df_cov = run_evaluation(
+        n=EVAL_NUM_SCENARIOS, seed=RANDOM_SEED, use_covariates=True
+    )
+    df_cov["covariate_mode"] = "with_covariates"
 
-    write_report(df, save_dir=EVAL_DIR)
-    logger.info("All evaluation outputs saved to %s", EVAL_DIR)
+    # Salva separati
+    df_no_cov.to_csv(EVAL_DIR / "results_univariate.csv", index=False)
+    df_cov.to_csv(EVAL_DIR / "results_covariates.csv", index=False)
+
+    # Salva combinato
+    df_all = pd.concat([df_no_cov, df_cov], ignore_index=True)
+    df_all.to_csv(EVAL_DIR / "evaluation_results.csv", index=False)
+
+    # Report e plot sul combinato
+    print_report(df_all)
+    plot_results(df_all, save_dir=EVAL_DIR)
+    write_report(df_all, save_dir=EVAL_DIR)
+
+    # Confronto diretto
+    print("\n" + "=" * 65)
+    print("  COMPARISON: UNIVARIATE vs WITH COVARIATES")
+    print("=" * 65)
+    for mode, df_mode in [("Univariate", df_no_cov), ("With covariates", df_cov)]:
+        print(f"\n  {mode}:")
+        print(f"   Mean consistency : {df_mode['overall_consistency'].mean():.4f}")
+        print(f"   PASS rate        : {df_mode['is_consistent'].mean() * 100:.1f}%")
+        if "mase" in df_mode.columns:
+            print(f"   Mean MASE        : {df_mode['mase'].mean():.4f}")
+        print(f"   Mean sentences   : {df_mode['num_sentences'].mean():.1f}")
+
+    logger.info("All outputs saved to %s", EVAL_DIR)
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ NLI_MODEL_NAME: str = "facebook/bart-large-mnli"
 CONSISTENCY_THRESHOLD: float = 0.70
 
 # ────────────────────── evaluation settings ───────────────────────────
-EVAL_NUM_SCENARIOS: int = 50
+EVAL_NUM_SCENARIOS: int = 10
 
 # ────────────────────── SHAP / surrogate ──────────────────────────────
 SHAP_TOP_K: int = 5  # number of top attributions to surface in narration

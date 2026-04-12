@@ -11,3 +11,5 @@ pytest>=7.4,<9.0
 # Extension 1 — covariate attribution
 xgboost>=2.0
 shap>=0.43
+shap==0.44.0
+xgboost==2.0.3
