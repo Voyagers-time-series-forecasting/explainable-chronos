@@ -11,6 +11,7 @@ Series are diversified across:
 
 from typing import List, Tuple
 import numpy as np
+from extension_1.covariate_attribution import CovariateSet
 
 
 # ── diversity pools ────────────────────────────────────────────────────
@@ -153,8 +154,6 @@ def generate_synthetic_covariates(
     -------
     CovariateSet
     """
-    from extension_1.covariate_attribution import CovariateSet
-
     rng = np.random.default_rng(seed)
     T   = len(history)
 

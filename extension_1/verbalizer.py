@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+import torch
 from config import RANDOM_SEED
 from covariate_attribution import AttributionResult
 from feature_extractor import ForecastFeatures
@@ -453,9 +454,6 @@ class LLMVerbalizer:
 
     def _load_model(self) -> None:
         if self._model is None:
-            import torch
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-            
             device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info("Loading LLM %s on %s ...", self.model_id, device)
             

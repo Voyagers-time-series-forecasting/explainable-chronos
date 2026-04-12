@@ -17,18 +17,18 @@ import numpy as np
 
 from shared.forecast_provider import ChronosForecastProvider
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
+
+from extension_1.config import PipelineConfig
+from extension_1.pipeline import VerbalizationPipeline
+from extension_1.verbalizer import TemplateVerbalizer
+from extension_1.consistency_scorer import NLIConsistencyScorer
+from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
+from extension_1.evaluation import main as eval_main
+
 
 def run_ext1_demo(seed: int = 42, with_covariates: bool = False) -> None:
     """Run Extension 1 demo, optionally with synthetic covariates."""
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
-
-    from extension_1.config import PipelineConfig
-    from extension_1.pipeline import VerbalizationPipeline
-    from extension_1.verbalizer import TemplateVerbalizer
-    from extension_1.consistency_scorer import NLIConsistencyScorer
-    from shared.forecast_provider import ChronosForecastProvider
-    from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
-
     config = PipelineConfig(seed=seed)
     history = generate_demo_time_series(seed=seed, length=50)
     covariates = None
@@ -80,9 +80,6 @@ def run_ext1_demo(seed: int = 42, with_covariates: bool = False) -> None:
 
 def run_ext1_evaluate() -> None:
     """Run Extension 1 full evaluation."""
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
-    from extension_1.evaluation import main as eval_main
-
     eval_main()
 
 
