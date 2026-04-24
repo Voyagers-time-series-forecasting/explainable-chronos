@@ -1,288 +1,395 @@
 \documentclass[conference]{IEEEtran}
-\IEEEoverridecommandlockouts
-% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
-\usepackage{cite}
-\usepackage{amsmath,amssymb,amsfonts}
-\usepackage{algorithmic}
-\usepackage{graphicx}
-\usepackage{textcomp}
-\usepackage{xcolor}
-\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
-    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
-\begin{document}
 
-\title{Conference Paper Title*\\
-{\footnotesize \textsuperscript{*}Note: Sub-titles are not captured in Xplore and
-should not be used}
-\thanks{Identify applicable funding agency here. If none, delete this.}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{cite}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=blue
 }
 
-\author{\IEEEauthorblockN{1\textsuperscript{st} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
-\and
-\IEEEauthorblockN{2\textsuperscript{nd} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
-\and
-\IEEEauthorblockN{3\textsuperscript{rd} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
-\and
-\IEEEauthorblockN{4\textsuperscript{th} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
-\and
-\IEEEauthorblockN{5\textsuperscript{th} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
-\and
-\IEEEauthorblockN{6\textsuperscript{th} Given Name Surname}
-\IEEEauthorblockA{\textit{dept. name of organization (of Aff.)} \\
-\textit{name of organization (of Aff.)}\\
-City, Country \\
-email address or ORCID}
+\begin{document}
+
+\title{Explainable Chronos: A Post-Hoc Framework for Faithful Verbalization and Interactive Querying of Probabilistic Time-Series Forecasts}
+
+\author{
+\IEEEauthorblockN{[Author~1],
+[Author~2],
+[Author~3],
+[Author~4],
+Emanuele Romito}
+\IEEEauthorblockA{
+Course: 01VIXSM --- Deep Natural Language Processing, A.Y.\ 2025--2026\\
+\textit{Repository:} \url{https://github.com/Voyagers-time-series-forecasting/explainable-chronos}}
 }
 
 \maketitle
 
+% =====================================================================
 \begin{abstract}
-This document is a model and instructions for \LaTeX.
-This and the IEEEtran.cls file define the components of your paper [title, text, heads, etc.]. *CRITICAL: Do Not Use Symbols, Special Characters, Footnotes, 
-or Math in Paper Title or Abstract.
 \end{abstract}
 
 \begin{IEEEkeywords}
-component, formatting, style, styling, insert
 \end{IEEEkeywords}
 
+
+% =====================================================================
 \section{Introduction}
-This document is a model and instructions for \LaTeX.
-Please observe the conference page limits. 
+% =====================================================================
 
-\section{Ease of Use}
+Probabilistic time-series forecasting models such as Chronos-2~\cite{chronos2} produce quantile predictions (P10, P50, P90) that encode rich information about expected trends, uncertainty, and tail risks.
+However, these numerical outputs are difficult for non-expert stakeholders to interpret: a vector of quantile values communicates nothing intuitively about \emph{why} a forecast was generated, how confident the model is, or what role each input covariate played in shaping the prediction.
+This gap between model output and human understanding is precisely what our work is trying to fill.
 
-\subsection{Maintaining the Integrity of the Specifications}
+\vspace{2mm}
 
-The IEEEtran class file is used to format your paper and style the text. All margins, 
-column widths, line spaces, and text fonts are prescribed; please do not 
-alter them. You may note peculiarities. For example, the head margin
-measures proportionately more than is customary. This measurement 
-and others are deliberate, using specifications that anticipate your paper 
-as one part of the entire proceedings, and not as an independent document. 
-Please do not revise any of the current designations.
+Our project addresses this gap by building a modular NLP framework that sits entirely on top of Chronos-2 at inference time and produces two complementary capabilities: (i) automatic natural-language explanations of forecasts grounded in extracted numerical features and covariate attributions (Extension 1), and (ii) an interactive dialogue interface through which users can query and counterfactually modify those forecasts using plain English (Extension 2).
 
-\section{Prepare Your Paper Before Styling}
-Before you begin to format your paper, first write and save the content as a 
-separate text file. Complete all content and organizational editing before 
-formatting. Please note sections \ref{AA}--\ref{SCM} below for more information on 
-proofreading, spelling and grammar.
+\vspace{2mm}
 
-Keep your text and graphic files separate until after the text has been 
-formatted and styled. Do not number text heads---{\LaTeX} will do that 
-for you.
+Exstension 1 addresses two complementary challenges: generating natural-language summaries that faithfully describe the content of quantile forecasts, and automatically verifying whether the generated text is consistent with the underlying numerical evidence.
+We frame the verification task as a Natural Language Inference (NLI) problem~\cite{bowman2015snli,williams2018mnli}, where a structured rendering of the numerical features serves as the \emph{premise} and each verbalized sentence serves as the \emph{hypothesis}.
+Our discourse planning stage draws on Rhetorical Structure Theory (RST)~\cite{mann1988rst}, using rhetorically motivated relations to organize the generated content into coherent multi-sentence summaries.
 
-\subsection{Abbreviations and Acronyms}\label{AA}
-Define abbreviations and acronyms the first time they are used in the text, 
-even after they have been defined in the abstract. Abbreviations such as 
-IEEE, SI, MKS, CGS, ac, dc, and rms do not have to be defined. Do not use 
-abbreviations in the title or heads unless they are unavoidable.
+% =====================================================================
+\section{Problem Statement}
+% =====================================================================
 
-\subsection{Units}
-\begin{itemize}
-\item Use either SI (MKS) or CGS as primary units. (SI units are encouraged.) English units may be used as secondary units (in parentheses). An exception would be the use of English units as identifiers in trade, such as ``3.5-inch disk drive''.
-\item Avoid combining SI and CGS units, such as current in amperes and magnetic field in oersteds. This often leads to confusion because equations do not balance dimensionally. If you must use mixed units, clearly state the units for each quantity that you use in an equation.
-\item Do not mix complete spellings and abbreviations of units: ``Wb/m\textsuperscript{2}'' or ``webers per square meter'', not ``webers/m\textsuperscript{2}''. Spell out units when they appear in text: ``. . . a few henries'', not ``. . . a few H''.
-\item Use a zero before decimal points: ``0.25'', not ``.25''. Use ``cm\textsuperscript{3}'', not ``cc''.)
-\end{itemize}
+\subsection{Extension 1}
 
-\subsection{Equations}
-Number equations consecutively. To make your 
-equations more compact, you may use the solidus (~/~), the exp function, or 
-appropriate exponents. Italicize Roman symbols for quantities and variables, 
-but not Greek symbols. Use a long dash rather than a hyphen for a minus 
-sign. Punctuate equations with commas or periods when they are part of a 
-sentence, as in:
+\textbf{Input.}
+A historical time series $\mathbf{x} = (x_1, \dots, x_T) \in \mathbb{R}^T$ and, optionally, a matrix of past covariates $\mathbf{Z} \in \mathbb{R}^{T \times C}$ with $C$ named covariates.
+
+\vspace{2mm}
+
+\textbf{Task.}
+Given a Chronos-2 quantile forecast $\hat{\mathbf{y}}^{(q)}$ for quantiles $q \in \{0.10, 0.50, 0.90\}$ over a horizon $H$:
+%
 \begin{equation}
-a+b=\gamma\label{eq}
+  \hat{\mathbf{y}}^{(q)} = \bigl(\hat{y}^{(q)}_1, \dots, \hat{y}^{(q)}_H\bigr), \quad q \in \{0.10, 0.50, 0.90\},
 \end{equation}
+%
+produce a natural-language summary $\mathcal{S} = (s_1, \dots, s_K)$ such that each sentence $s_k$ is factually grounded in a subset of numerical features derived from the quantiles, and then score each sentence for factual consistency via NLI.
 
-Be sure that the 
-symbols in your equation have been defined before or immediately following 
-the equation. Use ``\eqref{eq}'', not ``Eq.~\eqref{eq}'' or ``equation \eqref{eq}'', except at 
-the beginning of a sentence: ``Equation \eqref{eq} is . . .''
+\vspace{2mm}
 
-\subsection{\LaTeX-Specific Advice}
+\textbf{Output.}
+A verbalization result comprising:
+(a) the paragraph-level summary $\mathcal{S}$;
+(b) per-sentence grounding metadata mapping each $s_k$ to the numerical features that generated it;
+(c) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent.
 
-Please use ``soft'' (e.g., \verb|\eqref{Eq}|) cross references instead
-of ``hard'' references (e.g., \verb|(1)|). That will make it possible
-to combine sections, add equations, or change the order of figures or
-citations without having to go through the file line by line.
 
-Please don't use the \verb|{eqnarray}| equation environment. Use
-\verb|{align}| or \verb|{IEEEeqnarray}| instead. The \verb|{eqnarray}|
-environment leaves unsightly spaces around relation symbols.
+% =====================================================================
+\section{Methodology}
+% =====================================================================
 
-Please note that the \verb|{subequations}| environment in {\LaTeX}
-will increment the main equation counter even when there are no
-equation numbers displayed. If you forget that, you might write an
-article in which the equation numbers skip from (17) to (20), causing
-the copy editors to wonder if you've discovered a new method of
-counting.
+\subsection{Extension 1}
 
-{\BibTeX} does not work by magic. It doesn't get the bibliographic
-data from thin air but from .bib files. If you use {\BibTeX} to produce a
-bibliography you must send the .bib files. 
+The pipeline consists of four sequential stages: forecast and feature extraction (Stage A), optional covariate attribution (Stage B), verbalization (Stage C), and NLI consistency scoring (Stage D).
 
-{\LaTeX} can't read your mind. If you assign the same label to a
-subsubsection and a table, you might find that Table I has been cross
-referenced as Table IV-B3. 
 
-{\LaTeX} does not have precognitive abilities. If you put a
-\verb|\label| command before the command that updates the counter it's
-supposed to be using, the label will pick up the last counter to be
-cross referenced instead. In particular, a \verb|\label| command
-should not go before the caption of a figure or a table.
+\subsection{Stage A: Forecast and Feature Extraction}
 
-Do not use \verb|\nonumber| inside the \verb|{array}| environment. It
-will not stop equation numbers inside \verb|{array}| (there won't be
-any anyway) and it might stop a wanted equation number in the
-surrounding equation.
+The Chronos-2 model produces probabilistic forecasts from which we extract quantiles P10, P50, and P90. All subsequent feature extraction uses only NumPy and SciPy.
 
-\subsection{Some Common Mistakes}\label{SCM}
+\vspace{2mm}
+
+\textbf{Trend direction and magnitude.}
+A linear fit $\hat{y}^{(0.5)}_t = \alpha + \beta\, t$ yields the slope $\beta$.
+The normalized slope is computed as $\bar{\beta} = \beta \,/\, \overline{|P50|}$.
+Magnitude is classified using two thresholds: $|\bar{\beta}| > 0.05 \Rightarrow$ \emph{sharply}, $|\bar{\beta}| > 0.02 \Rightarrow$ \emph{moderately}, otherwise \emph{slightly}.
+Direction is \emph{flat} when $|\bar{\beta}| \leq 0.02$, \emph{rising} when $\bar{\beta} > 0.02$, and \emph{falling} otherwise.
+
+\vspace{2mm}
+
+\textbf{Uncertainty profile.}
+The prediction interval width $w_t = \hat{y}^{(0.9)}_t - \hat{y}^{(0.1)}_t$ yields relative uncertainty $\bar{w} = \overline{w}\,/\,\overline{|P50|}$, classified as \emph{high} ($\bar{w} > 0.30$), \emph{moderate} ($\bar{w} > 0.10$), or \emph{low}.
+A linear fit to $w_t$ determines whether intervals are \emph{widening} (slope $ > 0.01$), \emph{narrowing} (slope $ < -0.01$), or \emph{stable}.
+
+\vspace{2mm}
+
+\textbf{Interval asymmetry.}
+We compute:
+%
+\begin{equation}
+  A = \frac{\overline{(P90 - P50) - (P50 - P10)}}{\overline{w}},
+\end{equation}
+%
+labelling as \emph{symmetric} ($|A| < 0.10$), \emph{right-skewed} ($A > 0$), or \emph{left-skewed}.
+
+\vspace{2mm}
+
+\textbf{Tail risk flags.}
+Downside risk is flagged when $\min(P10) < x_T \cdot 0.80$; upside potential when $\max(P90) > x_T \cdot 1.20$.
+
+\vspace{2mm}
+
+\textbf{Regime-shift detection.}
+A Welch $t$-test compares the first and second halves of the P50 forecast; a $p$-value below $0.05$ flags a structural break.
+
+
+% ----- 4.2 -----
+\subsection{Stage B: Covariate Attribution}
+
+We train a surrogate XGBoost regressor \cite{xgboost} to approximate the mapping from covariate features to the P50 forecast level.
+Rolling windows over the covariate history produce multiple training rows with per-covariate aggregate features (mean, standard deviation, last, min, max).
+SHAP TreeExplainer~\cite{shap} then attributes forecast contributions to each covariate by computing mean absolute SHAP values aggregated across the five per-covariate features.
+The top-$k$ attributions (default $k=5$) are passed to the verbalizer to generate attribution-aware sentences.
+
+
+% ----- 4.3 -----
+\subsection{Stage C: Verbalization}
+
+We implement two complementary approaches.
+
+
+\vspace{2mm}
+
+\textbf{Approach~A --- Template Verbalizer.}
+An RST-based sentence planner uses phrase-variant dictionaries and a \texttt{DiscoursePlanner} module.
+The planner inspects the extracted features and optional attributions to select rhetorical relations.
+Five relation types are supported:
+
 \begin{itemize}
-\item The word ``data'' is plural, not singular.
-\item The subscript for the permeability of vacuum $\mu_{0}$, and other common scientific constants, is zero with subscript formatting, not a lowercase letter ``o''.
-\item In American English, commas, semicolons, periods, question and exclamation marks are located within quotation marks only when a complete thought or name is cited, such as a title or full quotation. When quotation marks are used, instead of a bold or italic typeface, to highlight a word or phrase, punctuation should appear outside of the quotation marks. A parenthetical phrase or statement at the end of a sentence is punctuated outside of the closing parenthesis (like this). (A parenthetical sentence is punctuated within the parentheses.)
-\item A graph within a graph is an ``inset'', not an ``insert''. The word alternatively is preferred to the word ``alternately'' (unless you really mean something that alternates).
-\item Do not use the word ``essentially'' to mean ``approximately'' or ``effectively''.
-\item In your paper title, if the words ``that uses'' can accurately replace the word ``using'', capitalize the ``u''; if not, keep using lower-cased.
-\item Be aware of the different meanings of the homophones ``affect'' and ``effect'', ``complement'' and ``compliment'', ``discreet'' and ``discrete'', ``principal'' and ``principle''.
-\item Do not confuse ``imply'' and ``infer''.
-\item The prefix ``non'' is not a word; it should be joined to the word it modifies, usually without a hyphen.
-\item There is no period after the ``et'' in the Latin abbreviation ``et al.''.
-\item The abbreviation ``i.e.'' means ``that is'', and the abbreviation ``e.g.'' means ``for example''.
+\item \textsc{Elaboration}: activated when a regime shift is detected, providing the $p$-value detail.
+\item \textsc{Cause}: activated when the top SHAP covariate contributes $>20\%$, expressing the driver.
+\item \textsc{Contrast}: activated when (a)~a non-flat trend co-occurs with high uncertainty, or (b)~the top two covariates have opposing directions with the second contributing $>15\%$.
+\item \textsc{Concession}: activated when a rising trend co-occurs with downside risk.
+\item \textsc{Sequence}: reserved for multi-phase forecasts.
 \end{itemize}
-An excellent style manual for science writers is \cite{b7}.
 
-\subsection{Authors and Affiliations}
-\textbf{The class file is designed for, but not limited to, six authors.} A 
-minimum of one author is required for all conference articles. Author names 
-should be listed starting from left to right and then moving down to the 
-next line. This is the author sequence that will be used in future citations 
-and by indexing services. Names should not be listed in columns nor group by 
-affiliation. Please keep your affiliations as succinct as possible (for 
-example, do not differentiate among departments of the same organization).
+Each sentence is paired with a grounding dictionary that records the exact numerical features (type, values, labels) from which it was generated.
+Phrase variants are sampled from pre-defined dictionaries using a seeded random generator for reproducibility.
 
-\subsection{Identify the Headings}
-Headings, or heads, are organizational devices that guide the reader through 
-your paper. There are two types: component heads and text heads.
+\textbf{Approach B --- LLM Verbalizer.}
+The template output serves as a draft for a local LLM.
+The LLM receives: (i) the numerical features, (ii) structured grounding triples of the form (subject, predicate, object), (iii) the template draft summary, and (iv) strict NLI-oriented constraints forbidding causal language, domain-specific speculation, and mathematical reasoning.
+Two LLM variants are evaluated:
+\emph{LLM~Guided} receives both the template draft and grounding triples;
+\emph{LLM~Raw} receives only the numerical features and grounding triples, without any template draft. For both LLM variants, each generated sentence is mapped to a \emph{combined} grounding that aggregates all feature groundings from the template result, since the LLM may freely reorganize information across sentences.
 
-Component heads identify the different components of your paper and are not 
-topically subordinate to each other. Examples include Acknowledgments and 
-References and, for these, the correct style to use is ``Heading 5''. Use 
-``figure caption'' for your Figure captions, and ``table head'' for your 
-table title. Run-in heads, such as ``Abstract'', will require you to apply a 
-style (in this case, italic) in addition to the style provided by the drop 
-down menu to differentiate the head from the text.
 
-Text heads organize the topics on a relational, hierarchical basis. For 
-example, the paper title is the primary text head because all subsequent 
-material relates and elaborates on this one topic. If there are two or more 
-sub-topics, the next level head (uppercase Roman numerals) should be used 
-and, conversely, if there are not at least two sub-topics, then no subheads 
-should be introduced.
+% ----- 4.4 -----
+\subsection{Stage D: NLI Consistency Scoring}
 
-\subsection{Figures and Tables}
-\paragraph{Positioning Figures and Tables} Place figures and tables at the top and 
-bottom of columns. Avoid placing them in the middle of columns. Large 
-figures and tables may span across both columns. Figure captions should be 
-below the figures; table heads should appear above the tables. Insert 
-figures and tables after they are cited in the text. Use the abbreviation 
-``Fig.~\ref{fig}'', even at the beginning of a sentence.
+For each sentence $s_k$ in the verbalization, a \emph{premise} $\pi_k$ is rendered from its grounding dictionary into unambiguous English.
+The rendering is type-specific: trend groundings produce statements about slope values and classifications; uncertainty groundings produce statements about interval widths and relative uncertainty; attribution groundings produce statements about SHAP values and directional effects.
 
-\begin{table}[htbp]
-\caption{Table Type Styles}
-\begin{center}
-\begin{tabular}{|c|c|c|c|}
-\hline
-\textbf{Table}&\multicolumn{3}{|c|}{\textbf{Table Column Head}} \\
-\cline{2-4} 
-\textbf{Head} & \textbf{\textit{Table column subhead}}& \textbf{\textit{Subhead}}& \textbf{\textit{Subhead}} \\
-\hline
-copy& More table copy$^{\mathrm{a}}$& &  \\
-\hline
-\multicolumn{4}{l}{$^{\mathrm{a}}$Sample of a Table footnote.}
-\end{tabular}
-\label{tab1}
-\end{center}
-\end{table}
+The NLI model \texttt{facebook/bart-large-mnli}~\cite{lewis2020bart} is used via the HuggingFace zero-shot-classification pipeline to estimate:
+%
+\begin{equation}
+  P(\text{entail} \mid \pi_k,\, s_k).
+\end{equation}
+%
+The overall consistency score for summary $\mathcal{S}$ is the arithmetic mean:
+%
+\begin{equation}
+  \text{Score}(\mathcal{S}) = \frac{1}{K} \sum_{k=1}^{K} P(\text{entail} \mid \pi_k,\, s_k).
+\end{equation}
+%
+A summary is deemed \emph{consistent} when $\text{Score}(\mathcal{S}) \geq 0.70$.
 
-\begin{figure}[htbp]
-\centerline{\includegraphics{fig1.png}}
-\caption{Example of a figure caption.}
-\label{fig}
-\end{figure}
 
-Figure Labels: Use 8 point Times New Roman for Figure labels. Use words 
-rather than symbols or abbreviations when writing Figure axis labels to 
-avoid confusing the reader. As an example, write the quantity 
-``Magnetization'', or ``Magnetization, M'', not just ``M''. If including 
-units in the label, present them within parentheses. Do not label axes only 
-with units. In the example, write ``Magnetization (A/m)'' or ``Magnetization 
-\{A[m(1)]\}'', not just ``A/m''. Do not label axes with a ratio of 
-quantities and units. For example, write ``Temperature (K)'', not 
-``Temperature/K''.
+% =====================================================================
+\section{Evaluation Protocol}
+% =====================================================================
 
-\section*{Acknowledgment}
+Following the recommendation to distinguish between two types of ground truth, our evaluation protocol cleanly separates two orthogonal questions: (1)~\emph{Is the forecast itself accurate?} and (2)~\emph{Is the explanation faithful to what the model actually predicted?}
+A high-scoring explanation of an inaccurate forecast is still a correct explanation; conversely, a fluent but hallucinated summary of an accurate forecast is a faithfulness failure.
 
-The preferred spelling of the word ``acknowledgment'' in America is without 
-an ``e'' after the ``g''. Avoid the stilted expression ``one of us (R. B. 
-G.) thanks $\ldots$''. Instead, try ``R. B. G. thanks$\ldots$''. Put sponsor 
-acknowledgments in the unnumbered footnote on the first page.
 
-\section*{References}
+% ----- 5.1 -----
+\subsection{Ground Truth 1: Forecast Accuracy}
 
-Please number citations consecutively within brackets \cite{b1}. The 
-sentence punctuation follows the bracket \cite{b2}. Refer simply to the reference 
-number, as in \cite{b3}---do not use ``Ref. \cite{b3}'' or ``reference \cite{b3}'' except at 
-the beginning of a sentence: ``Reference \cite{b3} was the first $\ldots$''
+This axis evaluates the Chronos-2 model against observed actuals and is independent of the verbalization pipeline.
 
-Number footnotes separately in superscripts. Place the actual footnote at 
-the bottom of the column in which it was cited. Do not put footnotes in the 
-abstract or reference list. Use letters for table footnotes.
+\textbf{MASE (Mean Absolute Scaled Error).}
+Defined as the ratio of the forecast's mean absolute error to that of a na\"ive seasonal baseline:
+%
+\begin{equation}
+  \text{MASE} = \frac{\frac{1}{H}\sum_{t=1}^{H} |y_t - \hat{y}^{(0.5)}_t|}{\frac{1}{T-1}\sum_{t=2}^{T} |x_t - x_{t-1}|}.
+\end{equation}
+%
+A MASE below~1 indicates that the model outperforms the na\"ive baseline.
 
-Unless there are six authors or more give all authors' names; do not use 
-``et al.''. Papers that have not been published, even if they have been 
-submitted for publication, should be cited as ``unpublished'' \cite{b4}. Papers 
-that have been accepted for publication should be cited as ``in press'' \cite{b5}. 
-Capitalize only the first word in a paper title, except for proper nouns and 
-element symbols.
+\textbf{Prediction Interval Coverage (\%).}
+The percentage of actual future values that fall within the P10--P90 prediction interval:
+%
+\begin{equation}
+  \text{Coverage} = \frac{100}{H} \sum_{t=1}^{H} \mathbf{1}\bigl[\hat{y}^{(0.1)}_t \leq y_t \leq \hat{y}^{(0.9)}_t\bigr].
+\end{equation}
+%
+For well-calibrated 80\% prediction intervals, the expected coverage is 80\%.
 
-For papers published in translation journals, please give the English 
-citation first, followed by the original foreign-language citation \cite{b6}.
+\textbf{Interval Sharpness.}
+The mean interval width normalized by the range of the actual values:
+%
+\begin{equation}
+  \text{Sharpness} = \frac{\overline{\hat{y}^{(0.9)} - \hat{y}^{(0.1)}}}{\max(\mathbf{y}) - \min(\mathbf{y})}.
+\end{equation}
+%
+Lower sharpness indicates tighter, more informative intervals (desirable when coverage is maintained).
 
-\begin{thebibliography}{00}
-\bibitem{b1} G. Eason, B. Noble, and I. N. Sneddon, ``On certain integrals of Lipschitz-Hankel type involving products of Bessel functions,'' Phil. Trans. Roy. Soc. London, vol. A247, pp. 529--551, April 1955.
-\bibitem{b2} J. Clerk Maxwell, A Treatise on Electricity and Magnetism, 3rd ed., vol. 2. Oxford: Clarendon, 1892, pp.68--73.
-\bibitem{b3} I. S. Jacobs and C. P. Bean, ``Fine particles, thin films and exchange anisotropy,'' in Magnetism, vol. III, G. T. Rado and H. Suhl, Eds. New York: Academic, 1963, pp. 271--350.
-\bibitem{b4} K. Elissa, ``Title of paper if known,'' unpublished.
-\bibitem{b5} R. Nicole, ``Title of paper with only first word capitalized,'' J. Name Stand. Abbrev., in press.
-\bibitem{b6} Y. Yorozu, M. Hirano, K. Oka, and Y. Tagawa, ``Electron spectroscopy studies on magneto-optical media and plastic substrate interface,'' IEEE Transl. J. Magn. Japan, vol. 2, pp. 740--741, August 1987 [Digests 9th Annual Conf. Magnetics Japan, p. 301, 1982].
-\bibitem{b7} M. Young, The Technical Writer's Handbook. Mill Valley, CA: University Science, 1989.
+
+% ----- 5.2 -----
+\subsection{Ground Truth 2: Explanation Faithfulness}
+
+This axis evaluates whether the generated text accurately describes what the model predicted, regardless of whether the prediction itself was correct.
+
+\textbf{Per-Sentence NLI Entailment Score.}
+For each sentence $s_k$, the entailment probability $P(\text{entail} \mid \pi_k, s_k) \in [0,1]$ measures how strongly the NLI model judges the sentence to be supported by its numerical premise.
+Scores near~1 indicate strong factual grounding; scores below~0.5 suggest the sentence introduces claims not entailed by the data.
+
+\textbf{Overall Consistency Score.}
+The arithmetic mean of per-sentence entailment probabilities across all $K$ sentences.
+A threshold of $0.70$ defines the binary pass/fail boundary.
+
+\textbf{Quantile Round-Trip Check.}
+An exact-match verification that re-derives all feature labels (trend direction, magnitude, uncertainty level) directly from the raw P10/P50/P90 arrays and compares them against the labels used during verbalization.
+Any mismatch is recorded as a \emph{faithfulness error}, indicating a bug in the feature extraction logic.
+This metric is binary per-scenario: zero mismatches (pass) or at least one (fail).
+
+
+% ----- 5.3 -----
+\subsection{Illustrative Success and Failure Cases}
+
+To provide concrete intuition for the metrics, we describe representative cases from preliminary experiments on synthetic data.
+
+\textbf{Success case (Template verbalizer, trending scenario).}
+The template generates: \emph{``The forecast indicates that values are expected to remain relatively stable over the next 7 periods.''}
+The NLI premise reads: \emph{``The median forecast slope is +0.0825 per period. The normalised slope is +0.0010. The trend is classified as slightly flat.''}
+The NLI model assigns an entailment probability of~0.999, because the sentence's ``relatively stable'' directly mirrors the ``slightly flat'' classification.
+
+\textbf{Failure case (LLM Raw verbalizer, flat scenario).}
+The LLM generates: \emph{``The financial performance has been consistent but not exceptionally strong or weak, indicating potential risks associated with current market conditions.''}
+The NLI premise contains only slope values and classification labels---no mention of ``financial performance'' or ``market conditions.''
+The NLI model assigns an entailment probability of~0.14, correctly flagging the hallucinated domain-specific content.
+
+\textbf{Failure case (Template verbalizer, regime-shift premise).}
+The template generates: \emph{``Additionally, a structural break is detected near the midpoint, indicating a potential change in the underlying pattern (p=0.0131).''}
+The NLI premise reads: \emph{``A Welch t-test comparing the first and second halves yields a p-value of 0.0131, indicating a statistically significant mean shift.''}
+The entailment probability drops to~0.011 because the NLI model struggles to link ``structural break'' with ``statistically significant mean shift''---a known lexical sensitivity of NLI models.
+
+
+% =====================================================================
+\section{Experiments}
+% =====================================================================
+
+% ----- 6.1 -----
+\subsection{Data Description}
+
+We evaluate on the M5 forecasting competition dataset, which provides hierarchical daily sales data for Walmart stores across multiple product categories and geographic regions.
+The M5 dataset offers real observed actuals against which both forecast accuracy and explanation faithfulness can be assessed.
+
+% ----- 6.2 -----
+\subsection{Experimental Design}
+
+\textbf{Hardware.} CPU-only execution (experiments in progress).
+
+\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small, \texttt{autogluon/chronos-2-small}); \texttt{transformers} (BART-large-MNLI for NLI, Qwen1.5-1.8B-Chat for LLM verbalization); \texttt{xgboost} (surrogate model); \texttt{shap} (TreeExplainer); NumPy, SciPy, pandas, matplotlib.
+
+\textbf{Validation method.}
+The dual evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage, sharpness) are computed against M5 observed actuals; explanation faithfulness metrics (NLI consistency, round-trip check) are computed against the model's own numerical features.
+
+\textbf{Planned comparisons.}
+Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across multiple M5 product categories, with and without covariate attribution.
+
+% ----- 6.3 -----
+\subsection{Results}
+
+\emph{Results will be reported after completion of the M5 experiments.}
+
+
+% =====================================================================
+\section{Conclusions and Takeaways}
+% =====================================================================
+
+\emph{To be completed after experimental results are available.}
+
+
+% =====================================================================
+% REFERENCES
+% =====================================================================
+\begin{thebibliography}{13}
+
+\bibitem{chronos2}
+A.~F.~Ansari, L.~Stella, C.~Turkmen, et~al.,
+``Chronos-2: From Univariate to Universal Forecasting,''
+\textit{arXiv preprint arXiv:2510.15821v1}, 2025.
+
+\bibitem{bowman2015snli}
+S.~R.~Bowman, G.~Angeli, C.~Potts, and C.~D.~Manning,
+``A large annotated corpus for learning natural language inference,''
+in \textit{Proc.\ EMNLP}, 2015, pp.~632--642.
+
+\bibitem{williams2018mnli}
+A.~Williams, N.~Nangia, and S.~R.~Bowman,
+``A broad-coverage challenge corpus for sentence understanding through inference,''
+in \textit{Proc.\ NAACL-HLT}, 2018, pp.~1112--1122.
+
+\bibitem{lewis2020bart}
+M.~Lewis, Y.~Liu, N.~Goyal, et~al.,
+``BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension,''
+in \textit{Proc.\ ACL}, 2020, pp.~7871--7880.
+
+\bibitem{dusek2020evaluating}
+O.~Du\v{s}ek and Z.~Kasner,
+``Evaluating Semantic Accuracy of Data-to-Text Generation with Natural Language Inference,''
+in \textit{Proc.\ INLG}, 2020, pp.~131--137.
+
+\bibitem{kryscinski2020evaluating}
+W.~Kry\'{s}ci\'{n}ski, B.~McCann, C.~Xiong, and R.~Socher,
+``Evaluating the factual consistency of abstractive text summarization,''
+in \textit{Proc.\ EMNLP}, 2020, pp.~9332--9346.
+
+\bibitem{mann1988rst}
+W.~C.~Mann and S.~A.~Thompson,
+``Rhetorical Structure Theory: Toward a functional theory of text organization,''
+\textit{Text}, vol.~8, no.~3, pp.~243--281, 1988.
+
+\bibitem{taboada2006applications}
+M.~Taboada and W.~C.~Mann,
+``Applications of Rhetorical Structure Theory,''
+\textit{Discourse Studies}, vol.~8, no.~4, pp.~567--588, 2006.
+
+\bibitem{hovy1993automated}
+E.~H.~Hovy,
+``Automated discourse generation using discourse structure relations,''
+\textit{Artificial Intelligence}, vol.~63, no.~1--2, pp.~341--385, 1993.
+
+\bibitem{rosner1992customizing}
+D.~R\"{o}sner and M.~Stede,
+``Customizing RST for the automatic production of technical manuals,''
+in \textit{Aspects of Automated Natural Language Generation} (LNAI~587), Springer, 1992, pp.~199--214.
+
+\bibitem{shap}
+S.~M.~Lundberg and S.-I.~Lee,
+``A Unified Approach to Interpreting Model Predictions,''
+in \textit{Proc.\ NeurIPS}, 2017, pp.~4765--4774.
+
+\bibitem{xgboost}
+T.~Chen and C.~Guestrin,
+``XGBoost: A Scalable Tree Boosting System,''
+in \textit{Proc.\ KDD}, 2016, pp.~785--794.
+
+\bibitem{qwen}
+J.~Bai, S.~Bai, Y.~Chu, et~al.,
+``Qwen Technical Report,''
+\textit{arXiv preprint arXiv:2309.16609}, 2023.
+
 \end{thebibliography}
-\vspace{12pt}
-\color{red}
-IEEE conference templates contain guidance text for composing and formatting conference papers. Please ensure that all template text is removed from your conference paper prior to submission to the conference. Failure to remove the template text from your paper may result in your paper not being published.
 
 \end{document}
