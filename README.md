@@ -1,5 +1,7 @@
 # explainable-chronos
 
+chronos big
+
 run python run_extensions.py ext1 evaluate to evaluate extension one
 
 make forecast generation more realistic
