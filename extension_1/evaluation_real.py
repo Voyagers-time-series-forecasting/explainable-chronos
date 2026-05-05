@@ -129,14 +129,13 @@ DATASET_SPECS: Dict[str, DatasetSpec] = {
         name="Weather",
         hf_path="",
         hf_name=None,
-        target_col="T (degC)",
+        target_col="temp_max",
         covariate_cols=[
-            "p (mbar)", "rh (%)", "VPmax (mbar)", "VPact (mbar)",
-            "VPdef (mbar)", "sh (g/kg)",
+            "precipitation", "temp_min", "wind",
         ],
-        description="Jena Climate station — 10-min intervals, 21 variables, 2009-2016",
-        # Official split: 70/10/20 → test = last ~10539 rows of 52696 total
-        test_split_size=10539,
+        description="Seattle weather dataset — daily weather data with temperature, precipitation, and wind",
+        # Use all available data
+        test_split_size=None,
     ),
     "sp500": DatasetSpec(
         name="SP500",
@@ -164,32 +163,20 @@ def load_dataset_df(spec: DatasetSpec) -> pd.DataFrame:
         return df
 
     if spec.name == "Weather":
-        # Jena Climate dataset (thuml/Time-Series-Library version, 52696 rows, 10-min, 21 vars).
-        # Monash-time-series-forecasting/weather on HuggingFace is a different dataset.
-        # Try multiple sources in case one is unavailable
-        urls = [
-            "https://raw.githubusercontent.com/thuml/Time-Series-Library/main/dataset/weather/weather.csv",
-            "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/main/Weather/weather.csv",  # Alternative source
-        ]
+        # Seattle weather dataset from Vega - simpler alternative
+        url = "https://raw.githubusercontent.com/vega/vega/main/docs/data/seattle-weather.csv"
         
-        df = None
-        for url in urls:
-            try:
-                logger.info("Downloading weather.csv from %s ...", url)
-                df = pd.read_csv(url, nrows=10539)  # Load official test split size
-                logger.info("Loaded Weather from GitHub: %s rows", len(df))
-                break
-            except Exception as e:
-                logger.debug("Failed to load from %s: %s", url, e)
-                continue
-        
-        if df is None:
-            # If all URLs fail, raise the error to be caught by caller
+        try:
+            logger.info("Downloading Seattle weather dataset from GitHub ...")
+            df = pd.read_csv(url)
+            logger.info("Loaded Weather (Seattle) from GitHub: %s rows", len(df))
+            return df
+        except Exception as e:
+            logger.error("Failed to load Weather dataset: %s", e)
             raise IOError(
-                "Could not load Weather dataset from any source. "
-                "Try downloading from https://github.com/thuml/Time-Series-Library"
+                f"Could not load Weather dataset from {url}. "
+                "Please check the URL or try a different dataset."
             )
-        return df
 
     if spec.name == "SP500":
         try:

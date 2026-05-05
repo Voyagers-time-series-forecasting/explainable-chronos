@@ -125,7 +125,7 @@ def main() -> None:
     parser.add_argument(
         "--dataset",
         nargs="+",
-        choices=["etth1", "ettm1", "m4", "aapl", "sp500"],
+        choices=["etth1", "ettm1", "weather", "sp500"],
         default=None,
         help="Real datasets to evaluate on (default: all)",
     )
