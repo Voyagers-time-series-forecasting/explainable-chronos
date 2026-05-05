@@ -267,16 +267,48 @@ def compute_accuracy(
     actuals: np.ndarray,
     history: np.ndarray,
 ) -> Dict[str, float]:
-    """Compute MASE, P10-P90 coverage, and interval sharpness."""
+    """Compute forecast accuracy metrics used in real dataset evaluation.
+
+    The metrics are:
+    - ``mase``: mean absolute scaled error relative to the one-step naive baseline
+      derived from the history differences. This is the traditional MASE.
+    - ``mase_first``: first-step MASE, computed only on the first forecasted value.
+      This isolates the one-step-ahead quality of the forecast from the multi-step
+      horizon.
+    - ``fair_mase``: a relative MAE against a multi-step naive baseline that
+      repeats the last observed historical value across the entire forecast
+      horizon. This is a more appropriate comparison for long-range forecasts
+      like 96 steps.
+    - ``coverage_pct``: percentage of actual values contained within the P10-P90
+      forecast interval, which measures probabilistic calibration.
+    - ``interval_sharpness``: mean interval width normalized by the range of the
+      actuals. This measures how narrow the predictive interval is.
+
+    We keep both ``mase`` and ``fair_mase`` because the standard scaled error
+    baseline can be misleading for a long horizon, while ``fair_mase`` directly
+    compares against the multi-step naive forecast that a model should beat.
+    """
     p10 = np.asarray(forecast["p10"])
     p50 = np.asarray(forecast["p50"])
     p90 = np.asarray(forecast["p90"])
     actuals = np.asarray(actuals)[: len(p50)]
 
+    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
+    forecast_first_mae = float(np.abs(p50[0] - actuals[0])) if len(p50) > 0 and len(actuals) > 0 else 0.0
+
+    # Legacy baseline: one-step changes from history.
     naive_errors = np.abs(np.diff(history))
     naive_mae = float(np.mean(naive_errors)) if len(naive_errors) > 0 else 1.0
-    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
     mase = forecast_mae / naive_mae if naive_mae > 1e-9 else 0.0
+    mase_first = forecast_first_mae / naive_mae if naive_mae > 1e-9 else 0.0
+
+    # Relative MAE vs multi-step naive forecast (repeat last history value).
+    if len(actuals) > 0:
+        naive_multi_errors = np.abs(actuals - history[-1])
+        naive_multi_mae = float(np.mean(naive_multi_errors))
+    else:
+        naive_multi_mae = 1.0
+    fair_mase = forecast_mae / naive_multi_mae if naive_multi_mae > 1e-9 else 0.0
 
     in_interval = (actuals >= p10) & (actuals <= p90)
     coverage = float(np.mean(in_interval)) * 100
@@ -285,7 +317,13 @@ def compute_accuracy(
     actual_range = float(np.ptp(actuals)) if np.ptp(actuals) > 1e-9 else 1.0
     sharpness = mean_width / actual_range
 
-    return {"mase": mase, "coverage_pct": coverage, "interval_sharpness": sharpness}
+    return {
+        "mase": mase,
+        "mase_first": mase_first,
+        "fair_mase": fair_mase,
+        "coverage_pct": coverage,
+        "interval_sharpness": sharpness,
+    }
 
 
 # ──────────────── pipeline builder ────────────────────────────────────
@@ -430,6 +468,8 @@ def run_real_evaluation(
                         "is_consistent": result.consistency_report.is_consistent,
                         "num_sentences": len(result.verbalization.sentences),
                         "mase": accuracy["mase"],
+                        "mase_first": accuracy["mase_first"],
+                        "fair_mase": accuracy["fair_mase"],
                         "coverage_pct": accuracy["coverage_pct"],
                         "interval_sharpness": accuracy["interval_sharpness"],
                         "rst_relations": ",".join(result.verbalization.rst_relations),
@@ -449,11 +489,12 @@ def run_real_evaluation(
                     records.append(record)
                     logger.info(
                         "[%s] window %d/%d [%s] [%s]  "
-                        "consistency=%.4f  mase=%.4f  coverage=%.1f%%",
+                        "consistency=%.4f  mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
                         spec.name, w_idx + 1, len(windows),
                         cov_mode, v_type,
                         result.consistency_report.overall_score,
                         accuracy["mase"],
+                        accuracy["fair_mase"],
                         accuracy["coverage_pct"],
                     )
 
@@ -564,16 +605,20 @@ def write_real_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR
     lines.append(f"| Mean NLI consistency | {df['overall_consistency'].mean():.4f} |")
     lines.append(f"| PASS rate (≥ 0.70) | {df['is_consistent'].mean()*100:.1f}% |")
     lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
+    lines.append(f"| Mean First-Step MASE | {df['mase_first'].mean():.4f} |")
+    lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
     lines.append(f"| Mean coverage | {df['coverage_pct'].mean():.1f}% |")
     lines.append("")
 
     lines.append("## 2. Forecast Accuracy by Dataset and Covariate Mode")
     lines.append("")
-    lines.append("| Dataset | Mode | Mean MASE | Mean Coverage | Mean Sharpness |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Dataset | Mode | Mean MASE | Mean First-Step MASE | Mean fair_mase | Mean Coverage | Mean Sharpness |")
+    lines.append("|---|---|---|---|---|---|---|")
     for (ds, cmode), grp in df.groupby(["dataset", "covariate_mode"]):
         lines.append(
             f"| {ds} | {cmode} | {grp['mase'].mean():.4f} "
+            f"| {grp['mase_first'].mean():.4f} "
+            f"| {grp['fair_mase'].mean():.4f} "
             f"| {grp['coverage_pct'].mean():.1f}% "
             f"| {grp['interval_sharpness'].mean():.4f} |"
         )
@@ -619,7 +664,7 @@ def print_real_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 65)
     print("  REAL DATASET EVALUATION SUMMARY")
     print("=" * 65)
-    print(df.groupby(["dataset", "covariate_mode"])[["mase", "coverage_pct"]].mean().round(4))
+    print(df.groupby(["dataset", "covariate_mode"])[["mase", "mase_first", "fair_mase", "coverage_pct"]].mean().round(4))
     print("\n  NLI Consistency by verbalizer:")
     print(df.groupby("verbalizer_type")["overall_consistency"].agg(["mean", "std"]).round(4))
     print()
