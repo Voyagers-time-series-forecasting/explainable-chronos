@@ -183,11 +183,9 @@ def run_evaluation(
     try:
         llm_guided = LLMVerbalizer(
             template_verbalizer=TemplateVerbalizer(seed=seed),
-            use_rst_guidance=True,
         )
         llm_raw = LLMVerbalizer(
             template_verbalizer=TemplateVerbalizer(seed=seed),
-            use_rst_guidance=False,
         )
 
         pipe_template = VerbalizationPipeline(
@@ -717,6 +715,9 @@ def main() -> None:
     df_cov.to_csv(EVAL_DIR / "results_covariates.csv", index=False)
 
     # Salva combinato
+    # Filter out columns that are completely empty/all-NA to avoid pandas warning
+    df_no_cov = df_no_cov.dropna(axis=1, how='all')
+    df_cov = df_cov.dropna(axis=1, how='all')
     df_all = pd.concat([df_no_cov, df_cov], ignore_index=True)
     df_all.to_csv(EVAL_DIR / "evaluation_results.csv", index=False)
 

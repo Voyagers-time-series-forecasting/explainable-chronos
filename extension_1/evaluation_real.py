@@ -166,10 +166,29 @@ def load_dataset_df(spec: DatasetSpec) -> pd.DataFrame:
     if spec.name == "Weather":
         # Jena Climate dataset (thuml/Time-Series-Library version, 52696 rows, 10-min, 21 vars).
         # Monash-time-series-forecasting/weather on HuggingFace is a different dataset.
-        url = "https://raw.githubusercontent.com/thuml/Time-Series-Library/main/dataset/weather/weather.csv"
-        logger.info("Downloading weather.csv from GitHub ...")
-        df = pd.read_csv(url)
-        logger.info("Loaded Weather from GitHub: %s rows", len(df))
+        # Try multiple sources in case one is unavailable
+        urls = [
+            "https://raw.githubusercontent.com/thuml/Time-Series-Library/main/dataset/weather/weather.csv",
+            "https://raw.githubusercontent.com/zhouhaoyi/ETDataset/main/Weather/weather.csv",  # Alternative source
+        ]
+        
+        df = None
+        for url in urls:
+            try:
+                logger.info("Downloading weather.csv from %s ...", url)
+                df = pd.read_csv(url, nrows=10539)  # Load official test split size
+                logger.info("Loaded Weather from GitHub: %s rows", len(df))
+                break
+            except Exception as e:
+                logger.debug("Failed to load from %s: %s", url, e)
+                continue
+        
+        if df is None:
+            # If all URLs fail, raise the error to be caught by caller
+            raise IOError(
+                "Could not load Weather dataset from any source. "
+                "Try downloading from https://github.com/thuml/Time-Series-Library"
+            )
         return df
 
     if spec.name == "SP500":
@@ -310,7 +329,6 @@ def build_pipelines(
         try:
             lg = LLMVerbalizer(
                 template_verbalizer=TemplateVerbalizer(seed=seed),
-                use_rst_guidance=True,
             )
             pipelines.append((
                 "LLM Guided",
@@ -328,7 +346,6 @@ def build_pipelines(
         try:
             lr = LLMVerbalizer(
                 template_verbalizer=TemplateVerbalizer(seed=seed),
-                use_rst_guidance=False,
             )
             pipelines.append((
                 "LLM Raw",
