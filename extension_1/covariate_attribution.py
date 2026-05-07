@@ -17,7 +17,7 @@ import shap  # type: ignore
 import xgboost as xgb  # type: ignore
 from sklearn.metrics import r2_score  # type: ignore
 
-from config import SHAP_TOP_K, SURROGATE_N_ESTIMATORS
+from extension_1.config import SHAP_TOP_K, SURROGATE_N_ESTIMATORS
 
 logger = logging.getLogger(__name__)
 
@@ -283,3 +283,61 @@ class SurrogateExplainer:
             surrogate_r2=self._r2,
             top_k=self.top_k,
         )
+
+
+# ───────────────── factory function ───────────────────────────────────
+def create_attributor(
+    method: str,
+    covariates: Optional[CovariateSet] = None,
+    forecast: Optional[np.ndarray] = None,
+    attention_weights: Optional[Dict[str, Any]] = None,
+    random_state: int = 42,
+    top_k: int = SHAP_TOP_K,
+) -> AttributionResult:
+    """Factory function to create covariate attributor.
+    
+    Parameters
+    ----------
+    method : str
+        Attribution method: "shap" or "attention"
+    covariates : CovariateSet, optional
+        Covariate data (required for both methods)
+    forecast : np.ndarray, optional
+        Forecast target (required for SHAP)
+    attention_weights : dict, optional
+        Attention weights from model (required for attention)
+    random_state : int
+        Random seed
+    top_k : int
+        Number of top attributions to return
+        
+    Returns
+    -------
+    AttributionResult
+        Attribution results
+    """
+    if covariates is None:
+        raise ValueError("covariates must be provided")
+    
+    if method == "shap":
+        if forecast is None:
+            raise ValueError("forecast must be provided for SHAP method")
+        
+        explainer = SurrogateExplainer(
+            random_state=random_state,
+            top_k=top_k,
+        )
+        explainer.fit(covariates, forecast)
+        return explainer.explain(covariates)
+    
+    elif method == "attention":
+        if attention_weights is None:
+            raise ValueError("attention_weights must be provided for attention method")
+        
+        from extension_1.attention_attributor import AttentionAttributor
+        attributor = AttentionAttributor(top_k=top_k)
+        # Attention method doesn't use forecast, only covariates and attention_weights
+        return attributor.explain(covariates, attention_weights)
+    
+    else:
+        raise ValueError(f"Unknown attribution method: {method}")

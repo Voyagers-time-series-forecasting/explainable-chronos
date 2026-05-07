@@ -3,8 +3,8 @@ Central runner for all Explainable-Chronos extensions.
 
 Usage::
 
-    python run_extensions.py ext1 demo                    # Run Extension 1 demo
-    python run_extensions.py ext1 demo --covariates       # Run with covariates
+    python run_extensions.py ext1 demo-uni                # Run Extension 1 univariate demo
+    python run_extensions.py ext1 demo-cov                # Run Extension 1 demo with covariates
     python run_extensions.py ext1 evaluate                # Run Extension 1 evaluation
     python run_extensions.py ext1 evaluate-real           # Run on real datasets
     python run_extensions.py ext1 evaluate-real --dataset etth1 --mode dev --verbalizers template
@@ -30,17 +30,23 @@ from shared.data_generators import generate_demo_time_series, generate_synthetic
 from extension_1.evaluation import main as eval_main
 
 
-def run_ext1_demo(seed: int = 42, with_covariates: bool = False) -> None:
+def run_ext1_demo(seed: int = 42, with_covariates: bool = False, attribution_method: str = "shap") -> None:
     """Run Extension 1 demo, optionally with synthetic covariates."""
-    config = PipelineConfig(seed=seed)
+    config = PipelineConfig(seed=seed, attribution_method=attribution_method)
     history = generate_demo_time_series(seed=seed, length=50)
     covariates = None
 
     if with_covariates:
         covariates = generate_synthetic_covariates(history, seed=seed)
 
+    # Enable attention extraction if needed
+    enable_attention = attribution_method == "attention"
+    if enable_attention and not with_covariates:
+        raise ValueError("Attention-based attribution requires covariates")
+    
+    forecast_provider = ChronosForecastProvider(enable_attention=enable_attention)
     pipeline = VerbalizationPipeline(
-        forecast_provider=ChronosForecastProvider(),
+        forecast_provider=forecast_provider,
         verbalizer=TemplateVerbalizer(seed=seed),
         scorer=NLIConsistencyScorer(),
         config=config,
@@ -90,10 +96,11 @@ def run_ext1_evaluate_real(
     datasets: list | None = None,
     mode: str = "dev",
     verbalizers: list | None = None,
+    attribution_method: str = "shap",
 ) -> None:
     """Run Extension 1 evaluation on real datasets."""
     from extension_1.evaluation_real import main as real_main
-    real_main(dataset_keys=datasets, mode_key=mode, verbalizer_names=verbalizers)
+    real_main(dataset_keys=datasets, mode_key=mode, verbalizer_names=verbalizers, attribution_method=attribution_method)
 
 
 def main() -> None:
@@ -108,14 +115,8 @@ def main() -> None:
     )
     parser.add_argument(
         "action",
-        choices=["demo", "demo-cov", "evaluate", "evaluate-real"],
+        choices=["demo-uni", "demo-cov", "evaluate", "evaluate-real"],
         help="Action to perform",
-    )
-    parser.add_argument(
-        "--covariates",
-        action="store_true",
-        default=False,
-        help="Include synthetic covariates in the demo",
     )
     parser.add_argument(
         "--seed",
@@ -142,25 +143,34 @@ def main() -> None:
         default=None,
         help="Verbalizers to use (default: all three)",
     )
+    parser.add_argument(
+        "--attribution-method",
+        choices=["shap", "attention"],
+        default="shap",
+        help="Attribution method for covariate importance (default: shap)",
+    )
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
     dispatch = {
-        ("ext1", "demo"): lambda: run_ext1_demo(
+        ("ext1", "demo-uni"): lambda: run_ext1_demo(
             seed=args.seed,
-            with_covariates=args.covariates,
+            with_covariates=False,
+            attribution_method=args.attribution_method,
         ),
         ("ext1", "demo-cov"): lambda: run_ext1_demo(
             seed=args.seed,
             with_covariates=True,
+            attribution_method=args.attribution_method,
         ),
         ("ext1", "evaluate"): run_ext1_evaluate,
         ("ext1", "evaluate-real"): lambda: run_ext1_evaluate_real(
             datasets=args.dataset,
             mode=args.mode,
             verbalizers=args.verbalizers,
+            attribution_method=args.attribution_method,
         ),
     }
 

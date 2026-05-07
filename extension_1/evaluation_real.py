@@ -79,7 +79,7 @@ EVAL_MODES: Dict[str, EvalMode] = {
         n_windows=5,
         history_length=252, 
         horizon=5, 
-        description="Fast dev mode for daily series — 5 windows, 20-step horizon",
+        description="Fast dev mode for daily series — 5 windows, 5-step horizon",
     ),
     "paper_daily": EvalMode(
         n_windows=20,
@@ -332,9 +332,11 @@ def build_pipelines(
     verbalizer_names: List[str],
     seed: int,
     config: PipelineConfig,
+    attribution_method: str = "shap",
 ) -> List[Tuple[str, VerbalizationPipeline]]:
     """Build the requested verbalization pipelines."""
-    provider = ChronosForecastProvider()
+    enable_attention = attribution_method == "attention"
+    provider = ChronosForecastProvider(enable_attention=enable_attention)
     scorer = NLIConsistencyScorer()
     pipelines: List[Tuple[str, VerbalizationPipeline]] = []
 
@@ -404,14 +406,15 @@ def run_real_evaluation(
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
     seed: int = RANDOM_SEED,
+    attribution_method: str = "shap",
 ) -> pd.DataFrame:
     """Run evaluation on real datasets."""
     if verbalizer_names is None:
         verbalizer_names = ["template"]
 
     mode = EVAL_MODES[mode_key]
-    config = PipelineConfig(seed=seed)
-    pipelines = build_pipelines(verbalizer_names, seed, config)
+    config = PipelineConfig(seed=seed, attribution_method=attribution_method)
+    pipelines = build_pipelines(verbalizer_names, seed, config, attribution_method=attribution_method)
 
     logger.info(
         "Real evaluation | mode=%s | datasets=%s | verbalizers=%s",
@@ -676,6 +679,7 @@ def main(
     dataset_keys: Optional[List[str]] = None,
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
+    attribution_method: str = "shap",
 ) -> None:
     """Run real dataset evaluation and save all outputs."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -690,6 +694,7 @@ def main(
         dataset_keys=dataset_keys,
         mode_key=mode_key,
         verbalizer_names=verbalizer_names,
+        attribution_method=attribution_method,
     )
 
     if df.empty:

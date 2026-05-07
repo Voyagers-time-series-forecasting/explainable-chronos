@@ -113,11 +113,19 @@ class VerbalizationPipeline:
                 for i, name in enumerate(covariates.names)
             }
 
-        forecast = self.forecast_provider.predict(
+        forecast_result = self.forecast_provider.predict(
                 time_series,
                 horizon=h,
                 past_covariates=past_cov,
         )
+        
+        # Handle attention extraction if enabled
+        if isinstance(forecast_result, tuple):
+            forecast, attention_weights = forecast_result
+        else:
+            forecast = forecast_result
+            attention_weights = None
+            
         logger.info("Forecast produced (P10/P50/P90 × %d steps).", h)
 
         # Stage A — Feature extraction
@@ -133,13 +141,18 @@ class VerbalizationPipeline:
         # Stage B — Covariate attribution (optional)
         attribution: AttributionResult | None = None
         if covariates is not None:
-            explainer = SurrogateExplainer(
+            from extension_1.covariate_attribution import create_attributor
+            attribution = create_attributor(
+                method=self.config.attribution_method,
+                covariates=covariates,
+                forecast=np.asarray(forecast["p50"]),
+                attention_weights=attention_weights,
                 random_state=self.config.seed,
+                top_k=self.config.shap_top_k,
             )
-            explainer.fit(covariates, np.asarray(forecast["p50"]))
-            attribution = explainer.explain(covariates)
             logger.info(
-                "Attribution: R²=%.4f, top=%s (%.1f%%)",
+                "Attribution (%s): R²=%.4f, top=%s (%.1f%%)",
+                self.config.attribution_method.upper(),
                 attribution.surrogate_r2,
                 attribution.attributions[0].name if attribution.attributions else "?",
                 attribution.attributions[0].relative_impact_pct
