@@ -104,9 +104,15 @@ class AttentionAttributor:
             for attr in attributions:
                 attr.relative_impact_pct = (attr.importance_score / total) * 100
 
+        # Temporal saliency from enc_time_self_attn_weights (per-group within-time
+        # attention).  Shape per layer: (groups, heads, patches, patches).
+        # This signal has focus_breadth ~0.77-0.82, unlike enc_group which is
+        # near-uniform (~0.998) and was empirically confirmed to carry no
+        # covariate-specific temporal signal (see experiments/temporal_attention_probe.ipynb).
+        time_attn = attentions.get("enc_time_self_attn_weights")
         history_length = len(covariates.values)
         temporal, patch_ratio = self._compute_temporal_saliency(
-            list(group_attn), list(covariates.names), history_length
+            list(time_attn) if time_attn else [], list(covariates.names), history_length
         )
 
         return AttributionResult(
@@ -118,28 +124,32 @@ class AttentionAttributor:
 
     def _compute_temporal_saliency(
         self,
-        group_attn_layers: list[Any],
+        time_attn_layers: list[Any],
         covariate_names: list[str],
         history_length: int,
     ) -> tuple[list[TemporalAttribution], float]:
-        """Compute per-covariate temporal saliency from group attention layers.
+        """Compute per-covariate temporal saliency from enc_time_self_attn_weights.
 
-        For each layer the group attention has shape ``(Time, Heads, Groups, Groups)``.
-        We extract how much the Target group (index 0) attends to each covariate
-        group (indices 1+) at every patch position, average across layers, then
-        upsample from patch resolution to history-step resolution.
+        Each layer has shape ``(Groups, Heads, Patches, Patches)``.
+        For covariate group g (= covariate index c + 1) we take its head-averaged
+        key-patch signal — ``layer[g].mean(heads).mean(queries)`` → ``(Patches,)``
+        — which answers "which history patches did this covariate group attend to?"
+
+        This tensor is empirically informative (focus_breadth ≈ 0.77–0.82) unlike
+        enc_group_self_attn_weights which is near-uniform across patches.
 
         Returns
         -------
         temporal : list[TemporalAttribution]
         patch_to_step_ratio : float
         """
-        if not group_attn_layers:
+        if not time_attn_layers:
             return [], 1.0
 
-        first = group_attn_layers[0]
-        n_patches = first.shape[0]
-        n_groups = first.shape[-1]
+        first = time_attn_layers[0]
+        # shape: (groups, heads, patches, patches)
+        n_groups  = first.shape[0]
+        n_patches = first.shape[2]
         n_covariates = min(len(covariate_names), n_groups - 1)
 
         if n_covariates == 0 or n_patches == 0:
@@ -147,27 +157,27 @@ class AttentionAttributor:
 
         patch_to_step_ratio = history_length / n_patches
 
-        # Accumulate mean-over-heads target→covariate scores: (n_patches, n_covariates)
-        accumulated = torch.zeros(
-            n_patches, n_covariates, device=first.device, dtype=torch.float32
-        )
-        for layer_attn in group_attn_layers:
-            # (Time, Heads, Groups, Groups) → mean over heads → (Time, Groups, Groups)
-            avg_heads = layer_attn.float().mean(dim=1)
-            # row 0 = Target; cols 1..n_covariates = covariate groups
-            accumulated += avg_heads[:n_patches, 0, 1 : n_covariates + 1]
+        # Accumulate key-patch signal per covariate group: shape (n_covariates, n_patches)
+        accumulated = np.zeros((n_covariates, n_patches), dtype=np.float32)
+        for layer in time_attn_layers:
+            arr = layer.float().cpu().numpy()   # (groups, heads, patches, patches)
+            for c in range(n_covariates):
+                g = c + 1                        # group 0 = target; 1+ = covariates
+                if g >= arr.shape[0]:
+                    continue
+                # head-average → (patches, patches); then query-average → (patches,)
+                accumulated[c] += arr[g].mean(axis=0).mean(axis=0)
 
-        saliency_matrix = (accumulated / len(group_attn_layers)).cpu().numpy()
+        saliency_patch = accumulated / len(time_attn_layers)  # (n_covariates, n_patches)
 
         patch_idx = np.arange(n_patches, dtype=float)
-        hist_idx = np.linspace(0, n_patches - 1, history_length)
-
+        hist_idx  = np.linspace(0, n_patches - 1, history_length)
         max_entropy = float(np.log(history_length))
+
         temporal: list[TemporalAttribution] = []
         for c, name in enumerate(covariate_names[:n_covariates]):
-            sal_patch = saliency_matrix[:, c]
+            sal_patch = saliency_patch[c]
 
-            # Upsample patch-resolution saliency to history-step resolution
             sal_hist = np.interp(hist_idx, patch_idx, sal_patch)
             total = sal_hist.sum()
             sal_hist = sal_hist / total if total > 1e-12 else np.full(history_length, 1.0 / history_length)
@@ -186,15 +196,11 @@ class AttentionAttributor:
                 focus_breadth=focus_breadth,
             ))
 
-        # Per plan: if cross-group temporal signal is near-uniform for every covariate
-        # (entropy > 95% of maximum), it adds noise rather than signal — omit it.
         _ENTROPY_THRESHOLD = 0.95
         if temporal and all(t.focus_breadth > _ENTROPY_THRESHOLD for t in temporal):
             logger.debug(
-                "enc_group temporal saliency is near-uniform (min focus_breadth=%.3f > %.2f); "
-                "omitting temporal attribution.",
+                "enc_time temporal saliency is near-uniform (min fb=%.3f); omitting.",
                 min(t.focus_breadth for t in temporal),
-                _ENTROPY_THRESHOLD,
             )
             return [], patch_to_step_ratio
 
