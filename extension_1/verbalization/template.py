@@ -254,7 +254,7 @@ class TemplateVerbalizer:
             f"{rng.choice(_UNCERTAINTY_TREND_PHRASES[features.uncertainty_trend])}, "
             f"suggesting {_UNCERTAINTY_INTERPRETATION[features.uncertainty_level][features.uncertainty_trend]}."
         )
-        grounding["sentence_1"] = {
+        grounding[f"sentence_{len(sentences) - 1}"] = {
             "type": "uncertainty",
             "uncertainty_level": features.uncertainty_level,
             "uncertainty_trend": features.uncertainty_trend,
