@@ -23,8 +23,8 @@ Usage::
 
     python run_extensions.py ext1 evaluate
     python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
-    python run_extensions.py ext1 evaluate --dataset sp500 --mode dev_daily --verbalizers template
-    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm
+    python run_extensions.py ext1 evaluate --dataset sp500 --mode dev --verbalizers template
+    python run_extensions.py ext1 evaluate --mode full --verbalizers template llm
 """
 
 from __future__ import annotations
@@ -70,27 +70,15 @@ class EvalMode:
 EVAL_MODES: Dict[str, EvalMode] = {
     "dev": EvalMode(
         n_windows=5,
-        history_length=512,   # ~3 weeks hourly — standard in ETT benchmarks
-        horizon=96,           # 4 days ahead — standard ETT benchmark horizon
-        description="Fast dev mode — 5 windows, 96-step horizon (512 history)",
-    ),
-    "paper": EvalMode(
-        n_windows=20,
         history_length=512,
         horizon=96,
-        description="Paper mode — 20 windows, 96-step horizon (512 history)",
+        description="Fast dev mode — 5 windows, 96-step horizon (512 history)",
     ),
-    "dev_daily": EvalMode(
-        n_windows=5,
-        history_length=252, 
-        horizon=5, 
-        description="Fast dev mode for daily series — 5 windows, 5-step horizon",
-    ),
-    "paper_daily": EvalMode(
-        n_windows=20,
-        history_length=252,   # 1 anno
-        horizon=30,           # ~6 settimane
-        description="Paper mode for daily series — 20 windows, 30-step horizon",
+    "full": EvalMode(
+        n_windows=200,
+        history_length=512,
+        horizon=96,
+        description="Full mode — 200 windows, exhaustive evaluation",
     ),
 }
 
@@ -395,6 +383,7 @@ def run_evaluation(
     seed: int = RANDOM_SEED,
     save_traces: bool = False,
     use_judge: bool = False,
+    output_dir: Optional[Path | str] = None,
 ) -> pd.DataFrame:
     """Run evaluation on benchmark datasets."""
     if verbalizer_names is None:
@@ -421,7 +410,9 @@ def run_evaluation(
 
     records: List[Dict[str, Any]] = []
     judge_records: List[Dict[str, Any]] = []
-    traces_dir = EVAL_DIR / "traces"
+    
+    out_path = Path(output_dir) if output_dir else EVAL_DIR
+    traces_dir = out_path / "traces"
 
     for ds_key in dataset_keys:
         spec = DATASET_SPECS[ds_key]
@@ -534,7 +525,7 @@ def run_evaluation(
 
     if judge_records:
         judge_df = pd.DataFrame(judge_records)
-        judge_path = EVAL_DIR / "judge_results.csv"
+        judge_path = out_path / "judge_results.csv"
         judge_df.to_csv(judge_path, index=False)
         logger.info("Judge results saved to %s", judge_path)
 
@@ -742,10 +733,13 @@ def main(
     verbalizer_names: Optional[List[str]] = None,
     save_traces: bool = False,
     use_judge: bool = False,
+    output_dir: Optional[Path | str] = None,
 ) -> None:
     """Run evaluation and save all outputs."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
+    
+    out_path = Path(output_dir) if output_dir else EVAL_DIR
+    out_path.mkdir(parents=True, exist_ok=True)
 
     if dataset_keys is None:
         dataset_keys = ["etth1", "ettm1", "weather", "sp500"]
@@ -758,6 +752,7 @@ def main(
         verbalizer_names=verbalizer_names,
         save_traces=save_traces,
         use_judge=use_judge,
+        output_dir=out_path,
     )
 
     if df.empty:
@@ -771,16 +766,16 @@ def main(
         sub = df[df["dataset"] == spec.name]
         if not sub.empty:
             fname = f"results_{spec.name.replace(' ', '_')}.csv"
-            sub.to_csv(EVAL_DIR / fname, index=False)
+            sub.to_csv(out_path / fname, index=False)
             logger.info("Saved %s", fname)
 
-    df.to_csv(EVAL_DIR / "evaluation_results.csv", index=False)
+    df.to_csv(out_path / "evaluation_results.csv", index=False)
 
     print_summary(df)
-    plot_results(df, save_dir=EVAL_DIR)
-    write_report(df, mode_key=mode_key, save_dir=EVAL_DIR)
+    plot_results(df, save_dir=out_path)
+    write_report(df, mode_key=mode_key, save_dir=out_path)
 
-    logger.info("All eval outputs saved to %s", EVAL_DIR)
+    logger.info("All eval outputs saved to %s", out_path)
 
 
 if __name__ == "__main__":

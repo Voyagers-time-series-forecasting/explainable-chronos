@@ -36,6 +36,7 @@ def run_ext1_evaluate(
     verbalizers: list | None = None,
     save_traces: bool = False,
     use_judge: bool = False,
+    output_dir: str | None = None,
 ) -> None:
     """Run Extension 1 evaluation on benchmark datasets."""
     evaluation_main(
@@ -44,6 +45,7 @@ def run_ext1_evaluate(
         verbalizer_names=verbalizers,
         save_traces=save_traces,
         use_judge=use_judge,
+        output_dir=output_dir,
     )
 
 
@@ -71,9 +73,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["dev", "paper", "dev_daily", "paper_daily"],
+        choices=["dev", "full"],
         default="dev",
-        help="Evaluation mode: dev (5 windows, fast) or paper (20 windows, full)",
+        help="Evaluation mode: dev (5 windows, fast) or full (200 windows, exhaustive)",
     )
     parser.add_argument(
         "--verbalizers",
@@ -94,6 +96,11 @@ def main() -> None:
         default=False,
         help="Run LLM-as-judge pairwise comparisons and write judge_results.csv",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to save evaluation results (default: extension_1/results/extension_1)",
+    )
 
     args = parser.parse_args()
 
@@ -106,6 +113,7 @@ def main() -> None:
             verbalizers=args.verbalizers,
             save_traces=args.save_traces,
             use_judge=args.judge,
+            output_dir=args.output_dir,
         ),
     }
 

@@ -56,9 +56,7 @@ python run_extensions.py ext1 evaluate
 python run_extensions.py ext1 evaluate --dataset etth1
 python run_extensions.py ext1 evaluate --dataset etth1 ettm1 weather sp500
 python run_extensions.py ext1 evaluate --mode dev
-python run_extensions.py ext1 evaluate --mode paper
-python run_extensions.py ext1 evaluate --mode dev_daily
-python run_extensions.py ext1 evaluate --mode paper_daily
+python run_extensions.py ext1 evaluate --mode full
 python run_extensions.py ext1 evaluate --verbalizers template
 python run_extensions.py ext1 evaluate --verbalizers template llm
 python run_extensions.py ext1 evaluate --attribution-method shap
@@ -93,7 +91,7 @@ results/extension_1/
 |---|---|---|---|
 | `action` | `evaluate` | required | all |
 | `--dataset` | `etth1`, `ettm1`, `weather`, `sp500` | all datasets | `evaluate` |
-| `--mode` | `dev`, `paper`, `dev_daily`, `paper_daily` | `dev` | `evaluate` |
+| `--mode` | `dev`, `full` | `dev` | `evaluate` |
 | `--verbalizers` | `template`, `llm` | both | `evaluate` |
 | `--attribution-method` | `shap`, `attention` | `shap` | `evaluate` |
 
