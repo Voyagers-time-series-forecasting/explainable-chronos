@@ -116,21 +116,44 @@ def compute_forecast_accuracy(
 ) -> Dict[str, float]:
     """Compute forecast accuracy against synthetic actuals.
 
-    Returns
-    -------
-    dict
-        Keys: mase, coverage_pct, interval_sharpness.
+    The returned metrics are:
+    - ``mase``: the traditional mean absolute scaled error using history-based
+      one-step differences as the baseline.
+    - ``mase_first``: the first-step version of MASE, which evaluates only the
+      first forecasted point and is useful for one-step forecast quality.
+    - ``fair_mase``: relative mean absolute error compared to a multi-step naive
+      forecast that repeats the last observed input value for the entire
+      forecast horizon.
+    - ``coverage_pct``: percent of actual values inside the model's P10-P90
+      prediction interval.
+    - ``interval_sharpness``: the average interval width divided by the actuals'
+      value range.
+
+    ``fair_mase`` is included because long-horizon forecasts should be judged
+    against a full-horizon naive baseline, not only against one-step changes
+    in the history.
     """
     p10 = np.asarray(forecast["p10"])
     p50 = np.asarray(forecast["p50"])
     p90 = np.asarray(forecast["p90"])
     actuals = np.asarray(actuals)[: len(p50)]
 
-    # MASE
+    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
+    forecast_first_mae = float(np.abs(p50[0] - actuals[0])) if len(p50) > 0 and len(actuals) > 0 else 0.0
+
+    # Legacy baseline: one-step changes from history.
     naive_errors = np.abs(np.diff(history))
     naive_mae = float(np.mean(naive_errors)) if len(naive_errors) > 0 else 1.0
-    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
     mase = forecast_mae / naive_mae if naive_mae > 1e-9 else 0.0
+    mase_first = forecast_first_mae / naive_mae if naive_mae > 1e-9 else 0.0
+
+    # Relative MAE vs multi-step naive forecast (repeat last history value).
+    if len(actuals) > 0:
+        naive_multi_errors = np.abs(actuals - history[-1])
+        naive_multi_mae = float(np.mean(naive_multi_errors))
+    else:
+        naive_multi_mae = 1.0
+    fair_mase = forecast_mae / naive_multi_mae if naive_multi_mae > 1e-9 else 0.0
 
     # Coverage: % of actuals within P10-P90
     in_interval = (actuals >= p10) & (actuals <= p90)
@@ -143,6 +166,8 @@ def compute_forecast_accuracy(
 
     return {
         "mase": mase,
+        "mase_first": mase_first,
+        "fair_mase": fair_mase,
         "coverage_pct": coverage,
         "interval_sharpness": sharpness,
     }
@@ -183,11 +208,9 @@ def run_evaluation(
     try:
         llm_guided = LLMVerbalizer(
             template_verbalizer=TemplateVerbalizer(seed=seed),
-            use_rst_guidance=True,
         )
         llm_raw = LLMVerbalizer(
             template_verbalizer=TemplateVerbalizer(seed=seed),
-            use_rst_guidance=False,
         )
 
         pipe_template = VerbalizationPipeline(
@@ -269,6 +292,8 @@ def run_evaluation(
                 "rst_relations": ",".join(result.verbalization.rst_relations),
                 "faithfulness_errors": "; ".join(faith_errors) if faith_errors else "",
                 "mase": accuracy["mase"],
+                "mase_first": accuracy["mase_first"],
+                "fair_mase": accuracy["fair_mase"],
                 "coverage_pct": accuracy["coverage_pct"],
                 "interval_sharpness": accuracy["interval_sharpness"],
             }
@@ -291,10 +316,11 @@ def run_evaluation(
 
             records.append(record)
             logger.info(
-                "[%d/%d] [%s] %s  consistency=%.4f  mase=%.4f  coverage=%.1f%%",
+                "[%d/%d] [%s] %s  consistency=%.4f  mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
                 idx + 1, n, v_type, label,
                 result.consistency_report.overall_score,
                 accuracy["mase"],
+                accuracy["fair_mase"],
                 accuracy["coverage_pct"],
             )
 
@@ -479,6 +505,10 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     lines.append(f"| Min consistency | {min_sc:.4f} |")
     lines.append(f"| Max consistency | {max_sc:.4f} |")
     lines.append(f"| % consistent (≥ 0.7) | {pct_consistent:.1f}% |")
+    lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
+    lines.append(f"| Mean First-Step MASE | {df['mase_first'].mean():.4f} |")
+    if "fair_mase" in df.columns:
+        lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
     lines.append("")
 
     # ── 2. Breakdown by verbalizer type ───────────────────────────
@@ -565,7 +595,7 @@ def write_report(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     if "mase" in df.columns:
         lines.append("| Metric | Mean | Std | Min | Max |")
         lines.append("|---|---|---|---|---|")
-        for metric in ["mase", "coverage_pct", "interval_sharpness"]:
+        for metric in ["mase", "mase_first", "fair_mase", "coverage_pct", "interval_sharpness"]:
             if metric in df.columns:
                 lines.append(
                     f"| {metric} | {df[metric].mean():.4f} | "
@@ -717,6 +747,9 @@ def main() -> None:
     df_cov.to_csv(EVAL_DIR / "results_covariates.csv", index=False)
 
     # Salva combinato
+    # Filter out columns that are completely empty/all-NA to avoid pandas warning
+    df_no_cov = df_no_cov.dropna(axis=1, how='all')
+    df_cov = df_cov.dropna(axis=1, how='all')
     df_all = pd.concat([df_no_cov, df_cov], ignore_index=True)
     df_all.to_csv(EVAL_DIR / "evaluation_results.csv", index=False)
 

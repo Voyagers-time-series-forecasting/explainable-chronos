@@ -88,6 +88,8 @@ class PipelineConfig:
         Minimum mean entailment score to declare consistency.
     shap_top_k : int
         Number of top SHAP attributions to show in narration.
+    attribution_method : str
+        Attribution method: "shap" (default) or "attention".
     """
 
     seed: int = RANDOM_SEED
@@ -106,3 +108,4 @@ class PipelineConfig:
     nli_model: str = NLI_MODEL_NAME
     consistency_threshold: float = CONSISTENCY_THRESHOLD
     shap_top_k: int = SHAP_TOP_K
+    attribution_method: str = "shap"

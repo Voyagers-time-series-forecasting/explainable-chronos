@@ -59,7 +59,7 @@ Our project addresses this gap by building a modular NLP framework that sits ent
 
 \vspace{2mm}
 
-Exstension 1 addresses two complementary challenges: generating natural-language summaries that faithfully describe the content of quantile forecasts, and automatically verifying whether the generated text is consistent with the underlying numerical evidence.
+Extension 1 addresses two complementary challenges: generating natural-language summaries that faithfully describe the content of quantile forecasts, and automatically verifying whether the generated text is consistent with the underlying numerical evidence.
 We frame the verification task as a Natural Language Inference (NLI) problem~\cite{bowman2015snli,williams2018mnli}, where a structured rendering of the numerical features serves as the \emph{premise} and each verbalized sentence serves as the \emph{hypothesis}.
 Our discourse planning stage draws on Rhetorical Structure Theory (RST)~\cite{mann1988rst}, using rhetorically motivated relations to organize the generated content into coherent multi-sentence summaries.
 
@@ -144,10 +144,27 @@ A Welch $t$-test compares the first and second halves of the P50 forecast; a $p$
 % ----- 4.2 -----
 \subsection{Stage B: Covariate Attribution}
 
-We train a surrogate XGBoost regressor \cite{xgboost} to approximate the mapping from covariate features to the P50 forecast level.
-Rolling windows over the covariate history produce multiple training rows with per-covariate aggregate features (mean, standard deviation, last, min, max).
-SHAP TreeExplainer~\cite{shap} then attributes forecast contributions to each covariate by computing mean absolute SHAP values aggregated across the five per-covariate features.
-The top-$k$ attributions (default $k=5$) are passed to the verbalizer to generate attribution-aware sentences.
+When covariates are available, the pipeline can attach attribution metadata to the verbalized forecast.
+We support two post-hoc attribution methods: a surrogate-model SHAP explainer and an attention-rollout explainer.
+Both methods return a ranked list of covariates with relative impact scores, and the top-$k$ attributions (default $k=5$) are passed to the verbalizer to generate attribution-aware sentences.
+
+\vspace{2mm}
+
+\textbf{Surrogate model with SHAP.}
+The first method trains a surrogate XGBoost regressor~\cite{xgboost} to approximate the local mapping from covariate history to the P50 forecast level.
+Rolling windows over the covariate history produce multiple training rows with per-covariate aggregate features: mean, standard deviation, last value, minimum, and maximum.
+After fitting the surrogate, SHAP TreeExplainer is used to estimate feature contributions according to the Shapley-value framework of Lundberg and Lee~\cite{shap}.
+The five aggregate-feature attributions belonging to the same covariate are summed by absolute value, yielding one importance score per covariate.
+This method is model-agnostic with respect to Chronos-2: it explains the surrogate approximation of the forecast behavior rather than the internal transformer computation directly.
+
+\vspace{2mm}
+
+\textbf{Attention Rollout.}
+The second method uses attention weights extracted from Chronos-2 and aggregates them using Attention Rollout, following Abnar and Zuidema's method for quantifying attention flow in Transformers~\cite{abnar2020attentionflow}.
+For each transformer layer, attention matrices are averaged across heads, augmented with an identity connection to account for residual paths, row-normalized, and then multiplied across layers.
+The resulting rollout matrix approximates how information flows through stacked self-attention layers.
+We aggregate this rollout attention over the token positions associated with each covariate and normalize the resulting scores into relative covariate impacts.
+Unlike the SHAP surrogate, this method uses internal attention signals from the forecasting model, but its interpretation depends on how Chronos-2 represents covariates in the input sequence.
 
 
 % ----- 4.3 -----
@@ -165,7 +182,7 @@ Five relation types are supported:
 
 \begin{itemize}
 \item \textsc{Elaboration}: activated when a regime shift is detected, providing the $p$-value detail.
-\item \textsc{Cause}: activated when the top SHAP covariate contributes $>20\%$, expressing the driver.
+\item \textsc{Cause}: activated when the top attributed covariate contributes $>20\%$, expressing the driver.
 \item \textsc{Contrast}: activated when (a)~a non-flat trend co-occurs with high uncertainty, or (b)~the top two covariates have opposing directions with the second contributing $>15\%$.
 \item \textsc{Concession}: activated when a rising trend co-occurs with downside risk.
 \item \textsc{Sequence}: reserved for multi-phase forecasts.
@@ -291,8 +308,8 @@ The entailment probability drops to~0.011 because the NLI model struggles to lin
 % ----- 6.1 -----
 \subsection{Data Description}
 
-We evaluate on the M5 forecasting competition dataset, which provides hierarchical daily sales data for Walmart stores across multiple product categories and geographic regions.
-The M5 dataset offers real observed actuals against which both forecast accuracy and explanation faithfulness can be assessed.
+We evaluate on four real-world time-series datasets: ETTh1, ETTm1, Seattle Weather, and S\&P 500.
+These datasets provide observed actuals against which both forecast accuracy and explanation faithfulness can be assessed, and they include covariates for evaluating attribution-aware verbalization.
 
 % ----- 6.2 -----
 \subsection{Experimental Design}
@@ -302,10 +319,10 @@ The M5 dataset offers real observed actuals against which both forecast accuracy
 \textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small, \texttt{autogluon/chronos-2-small}); \texttt{transformers} (BART-large-MNLI for NLI, Qwen1.5-1.8B-Chat for LLM verbalization); \texttt{xgboost} (surrogate model); \texttt{shap} (TreeExplainer); NumPy, SciPy, pandas, matplotlib.
 
 \textbf{Validation method.}
-The dual evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage, sharpness) are computed against M5 observed actuals; explanation faithfulness metrics (NLI consistency, round-trip check) are computed against the model's own numerical features.
+The dual evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage, sharpness) are computed against observed actuals; explanation faithfulness metrics (NLI consistency, round-trip check) are computed against the model's own numerical features.
 
 \textbf{Planned comparisons.}
-Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across multiple M5 product categories, with and without covariate attribution.
+Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across the selected real-world datasets, with and without covariate attribution.
 
 % ----- 6.3 -----
 \subsection{Results}
@@ -323,7 +340,7 @@ Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across multi
 % =====================================================================
 % REFERENCES
 % =====================================================================
-\begin{thebibliography}{13}
+\begin{thebibliography}{14}
 
 \bibitem{chronos2}
 A.~F.~Ansari, L.~Stella, C.~Turkmen, et~al.,
@@ -384,6 +401,11 @@ in \textit{Proc.\ NeurIPS}, 2017, pp.~4765--4774.
 T.~Chen and C.~Guestrin,
 ``XGBoost: A Scalable Tree Boosting System,''
 in \textit{Proc.\ KDD}, 2016, pp.~785--794.
+
+\bibitem{abnar2020attentionflow}
+S.~Abnar and W.~Zuidema,
+``Quantifying Attention Flow in Transformers,''
+in \textit{Proc.\ ACL}, 2020, pp.~4190--4197.
 
 \bibitem{qwen}
 J.~Bai, S.~Bai, Y.~Chu, et~al.,

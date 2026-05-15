@@ -79,7 +79,7 @@ EVAL_MODES: Dict[str, EvalMode] = {
         n_windows=5,
         history_length=252, 
         horizon=5, 
-        description="Fast dev mode for daily series — 5 windows, 20-step horizon",
+        description="Fast dev mode for daily series — 5 windows, 5-step horizon",
     ),
     "paper_daily": EvalMode(
         n_windows=20,
@@ -129,14 +129,13 @@ DATASET_SPECS: Dict[str, DatasetSpec] = {
         name="Weather",
         hf_path="",
         hf_name=None,
-        target_col="T (degC)",
+        target_col="temp_max",
         covariate_cols=[
-            "p (mbar)", "rh (%)", "VPmax (mbar)", "VPact (mbar)",
-            "VPdef (mbar)", "sh (g/kg)",
+            "precipitation", "temp_min", "wind",
         ],
-        description="Jena Climate station — 10-min intervals, 21 variables, 2009-2016",
-        # Official split: 70/10/20 → test = last ~10539 rows of 52696 total
-        test_split_size=10539,
+        description="Seattle weather dataset — daily weather data with temperature, precipitation, and wind",
+        # Use all available data
+        test_split_size=None,
     ),
     "sp500": DatasetSpec(
         name="SP500",
@@ -164,13 +163,20 @@ def load_dataset_df(spec: DatasetSpec) -> pd.DataFrame:
         return df
 
     if spec.name == "Weather":
-        # Jena Climate dataset (thuml/Time-Series-Library version, 52696 rows, 10-min, 21 vars).
-        # Monash-time-series-forecasting/weather on HuggingFace is a different dataset.
-        url = "https://raw.githubusercontent.com/thuml/Time-Series-Library/main/dataset/weather/weather.csv"
-        logger.info("Downloading weather.csv from GitHub ...")
-        df = pd.read_csv(url)
-        logger.info("Loaded Weather from GitHub: %s rows", len(df))
-        return df
+        # Seattle weather dataset from Vega - simpler alternative
+        url = "https://raw.githubusercontent.com/vega/vega/main/docs/data/seattle-weather.csv"
+        
+        try:
+            logger.info("Downloading Seattle weather dataset from GitHub ...")
+            df = pd.read_csv(url)
+            logger.info("Loaded Weather (Seattle) from GitHub: %s rows", len(df))
+            return df
+        except Exception as e:
+            logger.error("Failed to load Weather dataset: %s", e)
+            raise IOError(
+                f"Could not load Weather dataset from {url}. "
+                "Please check the URL or try a different dataset."
+            )
 
     if spec.name == "SP500":
         try:
@@ -261,16 +267,48 @@ def compute_accuracy(
     actuals: np.ndarray,
     history: np.ndarray,
 ) -> Dict[str, float]:
-    """Compute MASE, P10-P90 coverage, and interval sharpness."""
+    """Compute forecast accuracy metrics used in real dataset evaluation.
+
+    The metrics are:
+    - ``mase``: mean absolute scaled error relative to the one-step naive baseline
+      derived from the history differences. This is the traditional MASE.
+    - ``mase_first``: first-step MASE, computed only on the first forecasted value.
+      This isolates the one-step-ahead quality of the forecast from the multi-step
+      horizon.
+    - ``fair_mase``: a relative MAE against a multi-step naive baseline that
+      repeats the last observed historical value across the entire forecast
+      horizon. This is a more appropriate comparison for long-range forecasts
+      like 96 steps.
+    - ``coverage_pct``: percentage of actual values contained within the P10-P90
+      forecast interval, which measures probabilistic calibration.
+    - ``interval_sharpness``: mean interval width normalized by the range of the
+      actuals. This measures how narrow the predictive interval is.
+
+    We keep both ``mase`` and ``fair_mase`` because the standard scaled error
+    baseline can be misleading for a long horizon, while ``fair_mase`` directly
+    compares against the multi-step naive forecast that a model should beat.
+    """
     p10 = np.asarray(forecast["p10"])
     p50 = np.asarray(forecast["p50"])
     p90 = np.asarray(forecast["p90"])
     actuals = np.asarray(actuals)[: len(p50)]
 
+    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
+    forecast_first_mae = float(np.abs(p50[0] - actuals[0])) if len(p50) > 0 and len(actuals) > 0 else 0.0
+
+    # Legacy baseline: one-step changes from history.
     naive_errors = np.abs(np.diff(history))
     naive_mae = float(np.mean(naive_errors)) if len(naive_errors) > 0 else 1.0
-    forecast_mae = float(np.mean(np.abs(p50 - actuals)))
     mase = forecast_mae / naive_mae if naive_mae > 1e-9 else 0.0
+    mase_first = forecast_first_mae / naive_mae if naive_mae > 1e-9 else 0.0
+
+    # Relative MAE vs multi-step naive forecast (repeat last history value).
+    if len(actuals) > 0:
+        naive_multi_errors = np.abs(actuals - history[-1])
+        naive_multi_mae = float(np.mean(naive_multi_errors))
+    else:
+        naive_multi_mae = 1.0
+    fair_mase = forecast_mae / naive_multi_mae if naive_multi_mae > 1e-9 else 0.0
 
     in_interval = (actuals >= p10) & (actuals <= p90)
     coverage = float(np.mean(in_interval)) * 100
@@ -279,7 +317,13 @@ def compute_accuracy(
     actual_range = float(np.ptp(actuals)) if np.ptp(actuals) > 1e-9 else 1.0
     sharpness = mean_width / actual_range
 
-    return {"mase": mase, "coverage_pct": coverage, "interval_sharpness": sharpness}
+    return {
+        "mase": mase,
+        "mase_first": mase_first,
+        "fair_mase": fair_mase,
+        "coverage_pct": coverage,
+        "interval_sharpness": sharpness,
+    }
 
 
 # ──────────────── pipeline builder ────────────────────────────────────
@@ -288,9 +332,11 @@ def build_pipelines(
     verbalizer_names: List[str],
     seed: int,
     config: PipelineConfig,
+    attribution_method: str = "shap",
 ) -> List[Tuple[str, VerbalizationPipeline]]:
     """Build the requested verbalization pipelines."""
-    provider = ChronosForecastProvider()
+    enable_attention = attribution_method == "attention"
+    provider = ChronosForecastProvider(enable_attention=enable_attention)
     scorer = NLIConsistencyScorer()
     pipelines: List[Tuple[str, VerbalizationPipeline]] = []
 
@@ -310,7 +356,6 @@ def build_pipelines(
         try:
             lg = LLMVerbalizer(
                 template_verbalizer=TemplateVerbalizer(seed=seed),
-                use_rst_guidance=True,
             )
             pipelines.append((
                 "LLM Guided",
@@ -328,7 +373,6 @@ def build_pipelines(
         try:
             lr = LLMVerbalizer(
                 template_verbalizer=TemplateVerbalizer(seed=seed),
-                use_rst_guidance=False,
             )
             pipelines.append((
                 "LLM Raw",
@@ -362,14 +406,15 @@ def run_real_evaluation(
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
     seed: int = RANDOM_SEED,
+    attribution_method: str = "shap",
 ) -> pd.DataFrame:
     """Run evaluation on real datasets."""
     if verbalizer_names is None:
         verbalizer_names = ["template"]
 
     mode = EVAL_MODES[mode_key]
-    config = PipelineConfig(seed=seed)
-    pipelines = build_pipelines(verbalizer_names, seed, config)
+    config = PipelineConfig(seed=seed, attribution_method=attribution_method)
+    pipelines = build_pipelines(verbalizer_names, seed, config, attribution_method=attribution_method)
 
     logger.info(
         "Real evaluation | mode=%s | datasets=%s | verbalizers=%s",
@@ -426,6 +471,8 @@ def run_real_evaluation(
                         "is_consistent": result.consistency_report.is_consistent,
                         "num_sentences": len(result.verbalization.sentences),
                         "mase": accuracy["mase"],
+                        "mase_first": accuracy["mase_first"],
+                        "fair_mase": accuracy["fair_mase"],
                         "coverage_pct": accuracy["coverage_pct"],
                         "interval_sharpness": accuracy["interval_sharpness"],
                         "rst_relations": ",".join(result.verbalization.rst_relations),
@@ -445,11 +492,12 @@ def run_real_evaluation(
                     records.append(record)
                     logger.info(
                         "[%s] window %d/%d [%s] [%s]  "
-                        "consistency=%.4f  mase=%.4f  coverage=%.1f%%",
+                        "consistency=%.4f  mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
                         spec.name, w_idx + 1, len(windows),
                         cov_mode, v_type,
                         result.consistency_report.overall_score,
                         accuracy["mase"],
+                        accuracy["fair_mase"],
                         accuracy["coverage_pct"],
                     )
 
@@ -560,16 +608,20 @@ def write_real_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR
     lines.append(f"| Mean NLI consistency | {df['overall_consistency'].mean():.4f} |")
     lines.append(f"| PASS rate (≥ 0.70) | {df['is_consistent'].mean()*100:.1f}% |")
     lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
+    lines.append(f"| Mean First-Step MASE | {df['mase_first'].mean():.4f} |")
+    lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
     lines.append(f"| Mean coverage | {df['coverage_pct'].mean():.1f}% |")
     lines.append("")
 
     lines.append("## 2. Forecast Accuracy by Dataset and Covariate Mode")
     lines.append("")
-    lines.append("| Dataset | Mode | Mean MASE | Mean Coverage | Mean Sharpness |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| Dataset | Mode | Mean MASE | Mean First-Step MASE | Mean fair_mase | Mean Coverage | Mean Sharpness |")
+    lines.append("|---|---|---|---|---|---|---|")
     for (ds, cmode), grp in df.groupby(["dataset", "covariate_mode"]):
         lines.append(
             f"| {ds} | {cmode} | {grp['mase'].mean():.4f} "
+            f"| {grp['mase_first'].mean():.4f} "
+            f"| {grp['fair_mase'].mean():.4f} "
             f"| {grp['coverage_pct'].mean():.1f}% "
             f"| {grp['interval_sharpness'].mean():.4f} |"
         )
@@ -615,7 +667,7 @@ def print_real_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 65)
     print("  REAL DATASET EVALUATION SUMMARY")
     print("=" * 65)
-    print(df.groupby(["dataset", "covariate_mode"])[["mase", "coverage_pct"]].mean().round(4))
+    print(df.groupby(["dataset", "covariate_mode"])[["mase", "mase_first", "fair_mase", "coverage_pct"]].mean().round(4))
     print("\n  NLI Consistency by verbalizer:")
     print(df.groupby("verbalizer_type")["overall_consistency"].agg(["mean", "std"]).round(4))
     print()
@@ -627,6 +679,7 @@ def main(
     dataset_keys: Optional[List[str]] = None,
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
+    attribution_method: str = "shap",
 ) -> None:
     """Run real dataset evaluation and save all outputs."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -641,6 +694,7 @@ def main(
         dataset_keys=dataset_keys,
         mode_key=mode_key,
         verbalizer_names=verbalizer_names,
+        attribution_method=attribution_method,
     )
 
     if df.empty:
