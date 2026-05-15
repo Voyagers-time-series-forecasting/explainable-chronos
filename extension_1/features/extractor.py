@@ -1,29 +1,25 @@
 """
-Module 2 — Feature Extractor.
-
-Derives interpretable numerical features from raw quantile forecasts
-(P10 / P50 / P90).  All computations use only **numpy** and **scipy** —
-no ML, no black boxes.
-
-The resulting ``ForecastFeatures`` dataclass is the semantic bridge
-consumed by the verbaliser.
+Feature Extractor — derives interpretable numerical features from raw
+quantile forecasts (P10 / P50 / P90) using only numpy and scipy.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from scipy import stats  # type: ignore
 
-from config import PipelineConfig
+from extension_1.config import (
+    EPSILON,
+    PipelineConfig,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# ───────────────────── dataclass ──────────────────────────────────────
 @dataclass
 class ForecastFeatures:
     """Interpretable features extracted from a quantile forecast.
@@ -83,34 +79,30 @@ class ForecastFeatures:
     upside_potential: bool
     regime_shift: bool
     regime_shift_pvalue: float
-    threshold_breaches: List[Dict[str, Any]]
+    threshold_breaches: list[dict[str, Any]]
     horizon: int
     last_observed: float
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialise features to a plain dictionary."""
         return asdict(self)
 
 
-# ───────────────── extraction function ────────────────────────────────
 def extract_features(
-    forecast: Dict[str, Any],
-    config: Optional[PipelineConfig] = None,
+    forecast: dict[str, Any],
+    config: PipelineConfig | None = None,
 ) -> ForecastFeatures:
     """Compute interpretable features from a quantile forecast dict.
 
     Parameters
     ----------
     forecast : dict
-        Must contain keys ``p10``, ``p50``, ``p90``, ``history_tail``,
-        and ``timestamps``.
+        Must contain keys ``p10``, ``p50``, ``p90``, ``history_tail``.
     config : PipelineConfig, optional
-        Threshold configuration; uses defaults when *None*.
 
     Returns
     -------
     ForecastFeatures
-        Populated feature dataclass.
     """
     cfg = config or PipelineConfig()
 
@@ -121,62 +113,54 @@ def extract_features(
     horizon = len(p50)
     last_observed = float(history_tail[-1])
 
-    # ── 1. Trend direction & magnitude ────────────────────────────
+    # ── 1. Trend ──────────────────────────────────────────────────
     steps = np.arange(horizon, dtype=np.float64)
     slope, _ = np.polyfit(steps, p50, deg=1)
     mean_abs_p50 = float(np.mean(np.abs(p50)))
-    norm_slope = slope / mean_abs_p50 if mean_abs_p50 > 1e-9 else 0.0
-
+    norm_slope = slope / mean_abs_p50 if mean_abs_p50 > EPSILON else 0.0
     abs_norm = abs(norm_slope)
-    if abs_norm > cfg.sharp_threshold:
-        magnitude = "sharply"
-    elif abs_norm > cfg.moderate_threshold:
-        magnitude = "moderately"
-    else:
-        magnitude = "slightly"
 
-    if abs_norm <= cfg.moderate_threshold:
-        direction = "flat"
-    elif norm_slope > 0:
-        direction = "rising"
-    else:
-        direction = "falling"
+    magnitude = (
+        "sharply" if abs_norm > cfg.sharp_threshold
+        else "moderately" if abs_norm > cfg.moderate_threshold
+        else "slightly"
+    )
+    direction = (
+        "flat" if abs_norm <= cfg.moderate_threshold
+        else "rising" if norm_slope > 0
+        else "falling"
+    )
 
-    # ── 2. Uncertainty profile ────────────────────────────────────
+    # ── 2. Uncertainty ────────────────────────────────────────────
     widths = p90 - p10
     mean_width = float(np.mean(widths))
-    rel_unc = mean_width / mean_abs_p50 if mean_abs_p50 > 1e-9 else 0.0
+    rel_unc = mean_width / mean_abs_p50 if mean_abs_p50 > EPSILON else 0.0
 
-    if rel_unc > cfg.high_uncertainty:
-        unc_level = "high"
-    elif rel_unc > cfg.low_uncertainty:
-        unc_level = "moderate"
-    else:
-        unc_level = "low"
+    unc_level = (
+        "high" if rel_unc > cfg.high_uncertainty
+        else "moderate" if rel_unc > cfg.low_uncertainty
+        else "low"
+    )
 
     width_slope, _ = np.polyfit(steps, widths, deg=1)
-    if width_slope > cfg.widening_threshold:
-        unc_trend = "widening"
-    elif width_slope < cfg.narrowing_threshold:
-        unc_trend = "narrowing"
-    else:
-        unc_trend = "stable"
+    unc_trend = (
+        "widening" if width_slope > cfg.widening_threshold
+        else "narrowing" if width_slope < cfg.narrowing_threshold
+        else "stable"
+    )
 
     # ── 3. Interval asymmetry ─────────────────────────────────────
-    upper = p90 - p50
-    lower = p50 - p10
     mean_total = float(np.mean(widths))
-    if mean_total > 1e-9:
-        asymmetry = float(np.mean(upper - lower)) / mean_total
-    else:
-        asymmetry = 0.0
-
-    if abs(asymmetry) < cfg.asymmetry_threshold:
-        asym_label = "symmetric"
-    elif asymmetry > 0:
-        asym_label = "right_skewed"
-    else:
-        asym_label = "left_skewed"
+    asymmetry = (
+        float(np.mean((p90 - p50) - (p50 - p10))) / mean_total
+        if mean_total > EPSILON
+        else 0.0
+    )
+    asym_label = (
+        "symmetric" if abs(asymmetry) < cfg.asymmetry_threshold
+        else "right_skewed" if asymmetry > 0
+        else "left_skewed"
+    )
 
     # ── 4. Tail risk flags ────────────────────────────────────────
     downside = bool(np.min(p10) < last_observed * cfg.downside_factor)
@@ -185,30 +169,21 @@ def extract_features(
     # ── 5. Regime-shift detection ─────────────────────────────────
     mid = horizon // 2
     if mid >= 2:
-        first_half = p50[:mid]
-        second_half = p50[mid:]
-        t_stat, p_val = stats.ttest_ind(first_half, second_half, equal_var=False)
+        _, p_val = stats.ttest_ind(p50[:mid], p50[mid:], equal_var=False)
         regime = bool(p_val < cfg.regime_pvalue)
         regime_pval = float(p_val)
     else:
-        regime = False
-        regime_pval = 1.0
+        regime, regime_pval = False, 1.0
 
     # ── 6. Domain-specific threshold breaches ─────────────────────
-    breaches: List[Dict[str, Any]] = []
+    breaches: list[dict[str, Any]] = []
     quantile_map = {"p10": p10, "p50": p50, "p90": p90}
     for name, threshold in cfg.critical_thresholds.items():
         for q_name, q_arr in quantile_map.items():
             for step_idx, val in enumerate(q_arr):
-                if name.startswith("max") and val > threshold:
-                    breaches.append({
-                        "name": name,
-                        "threshold": threshold,
-                        "quantile": q_name,
-                        "value": float(val),
-                        "step": step_idx,
-                    })
-                elif name.startswith("min") and val < threshold:
+                if (name.startswith("max") and val > threshold) or (
+                    name.startswith("min") and val < threshold
+                ):
                     breaches.append({
                         "name": name,
                         "threshold": threshold,

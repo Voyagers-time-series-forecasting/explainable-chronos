@@ -1,13 +1,22 @@
 """
 Central runner for all Explainable-Chronos extensions.
 
-Usage::
+Colab quick-start::
 
-    python run_extensions.py ext1 demo-uni                # Run Extension 1 univariate demo
-    python run_extensions.py ext1 demo-cov                # Run Extension 1 demo with covariates
-    python run_extensions.py ext1 evaluate                # Run Extension 1 evaluation
-    python run_extensions.py ext1 evaluate-real           # Run on real datasets
-    python run_extensions.py ext1 evaluate-real --dataset etth1 --mode dev --verbalizers template
+    !git clone <repo-url> && cd explainable-chronos
+    !pip install -e .                        # installs all deps from pyproject.toml
+    # GPU users: also run the line below for CUDA-enabled PyTorch
+    # !pip install torch --index-url https://download.pytorch.org/whl/cu121
+    !python run_extensions.py ext1 evaluate --mode dev
+    # Or via the installed entry point:
+    !explainable-chronos ext1 evaluate --mode dev
+
+Local usage::
+
+    python run_extensions.py ext1 evaluate
+    python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
+    python run_extensions.py ext1 evaluate --mode dev --attribution-method attention --save-traces
+    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm_guided --judge
 """
 
 from __future__ import annotations
@@ -16,91 +25,28 @@ import argparse
 import logging
 import sys
 
-import numpy as np
-
-from shared.forecast_provider import ChronosForecastProvider
-
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
 
-from extension_1.config import PipelineConfig
-from extension_1.pipeline import VerbalizationPipeline
-from extension_1.verbalizer import TemplateVerbalizer
-from extension_1.consistency_scorer import NLIConsistencyScorer
-from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
-from extension_1.evaluation import main as eval_main
+from extension_1.evaluation.runner import main as evaluation_main
 
 
-def run_ext1_demo(seed: int = 42, with_covariates: bool = False, attribution_method: str = "shap") -> None:
-    """Run Extension 1 demo, optionally with synthetic covariates."""
-    config = PipelineConfig(seed=seed, attribution_method=attribution_method)
-    history = generate_demo_time_series(seed=seed, length=50)
-    covariates = None
-
-    if with_covariates:
-        covariates = generate_synthetic_covariates(history, seed=seed)
-
-    # Enable attention extraction if needed
-    enable_attention = attribution_method == "attention"
-    if enable_attention and not with_covariates:
-        raise ValueError("Attention-based attribution requires covariates")
-    
-    forecast_provider = ChronosForecastProvider(enable_attention=enable_attention)
-    pipeline = VerbalizationPipeline(
-        forecast_provider=forecast_provider,
-        verbalizer=TemplateVerbalizer(seed=seed),
-        scorer=NLIConsistencyScorer(),
-        config=config,
-    )
-    result = pipeline.run(history, covariates=covariates)
-
-    title = "WITH COVARIATES" if with_covariates else "UNIVARIATE"
-    print("\n" + "=" * 65)
-    print(f"  EXTENSION 1 — FORECAST VERBALIZATION REPORT ({title})")
-    print("=" * 65)
-    print(
-        f"\n  Trend      : {result.features.trend_magnitude} "
-        f"{result.features.trend_direction} "
-        f"(slope={result.features.trend_slope:+.4f})"
-    )
-    print(
-        f"  Uncertainty: {result.features.uncertainty_level} "
-        f"({result.features.uncertainty_trend})"
-    )
-    print(f"  Downside   : {result.features.downside_risk}")
-    print(f"  Upside     : {result.features.upside_potential}")
-    print(f"  Regime shift: {result.features.regime_shift}")
-
-    if result.attribution:
-        print(f"\n  Top covariates:")
-        for attr in result.attribution.attributions[:3]:
-            print(f"   - {attr.name}: {attr.relative_impact_pct:.1f}% ({attr.direction})")
-        print(f"   Surrogate R²: {result.attribution.surrogate_r2:.4f}")
-
-    print(f"\n  Summary:\n   {result.verbalization.summary}")
-    print(
-        f"\n  Consistency : {result.consistency_report.overall_score:.4f} "
-        f"({'PASS' if result.consistency_report.is_consistent else 'FAIL'})"
-    )
-    for ss in result.consistency_report.sentence_scores:
-        tag = "+" if ss.entailment_prob >= result.consistency_report.threshold else "-"
-        print(f"   {tag} [{ss.entailment_prob:.3f}] {ss.sentence[:75]}")
-    print()
-
-
-def run_ext1_evaluate() -> None:
-    """Run Extension 1 full evaluation on synthetic scenarios."""
-    eval_main()
-
-
-def run_ext1_evaluate_real(
+def run_ext1_evaluate(
     datasets: list | None = None,
     mode: str = "dev",
     verbalizers: list | None = None,
     attribution_method: str = "shap",
+    save_traces: bool = False,
+    use_judge: bool = False,
 ) -> None:
-    """Run Extension 1 evaluation on real datasets."""
-    from extension_1.evaluation_real import main as real_main
-    real_main(dataset_keys=datasets, mode_key=mode, verbalizer_names=verbalizers, attribution_method=attribution_method)
+    """Run Extension 1 evaluation on benchmark datasets."""
+    evaluation_main(
+        dataset_keys=datasets,
+        mode_key=mode,
+        verbalizer_names=verbalizers,
+        attribution_method=attribution_method,
+        save_traces=save_traces,
+        use_judge=use_judge,
+    )
 
 
 def main() -> None:
@@ -115,13 +61,8 @@ def main() -> None:
     )
     parser.add_argument(
         "action",
-        choices=["demo-uni", "demo-cov", "evaluate", "evaluate-real"],
+        choices=["evaluate"],
         help="Action to perform",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
     )
     parser.add_argument(
         "--dataset",
@@ -149,28 +90,31 @@ def main() -> None:
         default="shap",
         help="Attribution method for covariate importance (default: shap)",
     )
+    parser.add_argument(
+        "--save-traces",
+        action="store_true",
+        default=False,
+        help="Save per-scenario trace PNGs to results/extension_1/traces/",
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        default=False,
+        help="Run LLM-as-judge pairwise comparisons and write judge_results.csv",
+    )
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
     dispatch = {
-        ("ext1", "demo-uni"): lambda: run_ext1_demo(
-            seed=args.seed,
-            with_covariates=False,
-            attribution_method=args.attribution_method,
-        ),
-        ("ext1", "demo-cov"): lambda: run_ext1_demo(
-            seed=args.seed,
-            with_covariates=True,
-            attribution_method=args.attribution_method,
-        ),
-        ("ext1", "evaluate"): run_ext1_evaluate,
-        ("ext1", "evaluate-real"): lambda: run_ext1_evaluate_real(
+        ("ext1", "evaluate"): lambda: run_ext1_evaluate(
             datasets=args.dataset,
             mode=args.mode,
             verbalizers=args.verbalizers,
             attribution_method=args.attribution_method,
+            save_traces=args.save_traces,
+            use_judge=args.judge,
         ),
     }
 

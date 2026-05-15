@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Dict, Union
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
 import torch
 from chronos import Chronos2Pipeline
+from transformers import AutoConfig
 
 warnings.filterwarnings(
     "ignore", 
@@ -74,7 +75,6 @@ class ChronosForecastProvider:
             )
             if self.enable_attention:
                 # Load with config that enables attention extraction
-                from transformers import AutoConfig
                 config = AutoConfig.from_pretrained(self.model_id)
                 config.attn_implementation = 'eager'
                 config.output_attentions = True
@@ -128,8 +128,6 @@ class ChronosForecastProvider:
         captured_attentions = None
         if self.enable_attention:
             # Monkey patch _predict_step to capture attentions
-            original_predict_step = pipe._predict_step
-            
             def patched_predict_step(context, group_ids, future_covariates, num_output_patches):
                 kwargs = {}
                 if future_covariates is not None:
@@ -165,33 +163,29 @@ class ChronosForecastProvider:
             
             pipe._predict_step = patched_predict_step
 
-        # Build input — with or without covariates
-        if past_covariates is not None:
-            cov_input: dict = {
-                "target": torch.tensor(history_arr, dtype=torch.float32),
-                "past_covariates": {
-                    k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
-                    for k, v in past_covariates.items()
-                },
-            }
-            if future_covariates is not None:
-                cov_input["future_covariates"] = {
-                    k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
-                    for k, v in future_covariates.items()
-                }
-            inputs = [cov_input]
-            logger.info(
-                "Predicting with %d past covariates%s.",
-                len(past_covariates),
-                f" and {len(future_covariates)} future covariates"
-                if future_covariates else "",
+        if past_covariates is None:
+            raise ValueError(
+                "past_covariates is required — univariate forecasting is not supported."
             )
-        else:
-            # Original univariate path — unchanged
-            inputs = torch.tensor(
-                history_arr, dtype=torch.float32
-            ).reshape(1, 1, -1)
-            logger.info("Predicting univariate (no covariates).")
+
+        cov_input: dict = {
+            "target": torch.tensor(history_arr, dtype=torch.float32),
+            "past_covariates": {
+                k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
+                for k, v in past_covariates.items()
+            },
+        }
+        if future_covariates is not None:
+            cov_input["future_covariates"] = {
+                k: torch.tensor(np.asarray(v, dtype=np.float64), dtype=torch.float32)
+                for k, v in future_covariates.items()
+            }
+        inputs = [cov_input]
+        logger.info(
+            "Predicting with %d past covariates%s.",
+            len(past_covariates),
+            f" and {len(future_covariates)} future covariates" if future_covariates else "",
+        )
 
         forecast = pipe.predict(inputs, prediction_length=horizon)
 

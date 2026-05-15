@@ -1,12 +1,8 @@
-"""
-Configuration for Extension 1 — Post-Hoc Forecast Narration with Covariate Attribution.
+"""Configuration for Extension 1 — Post-Hoc Forecast Narration."""
 
-Centralises all thresholds, model names, seeds, and tuneable parameters
-so that every module imports from a single source of truth.
-"""
+from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
 
 
 # ──────────────────────────────── seeds ────────────────────────────────
@@ -15,6 +11,14 @@ RANDOM_SEED: int = 42
 # ──────────────────────────── forecast defaults ───────────────────────
 DEFAULT_HORIZON: int = 14
 HISTORY_TAIL_LENGTH: int = 5
+
+# ──────────────── numerical stability ─────────────────────────────────
+EPSILON: float = 1e-9  # guard against division by zero
+
+# ──────────────── quantile levels ─────────────────────────────────────
+QUANTILE_LOW: float = 0.10   # P10
+QUANTILE_MID: float = 0.50   # P50
+QUANTILE_HIGH: float = 0.90  # P90
 
 # ──────────────────────── trend classification ────────────────────────
 SHARP_THRESHOLD: float = 0.05
@@ -42,54 +46,37 @@ ASYMMETRY_THRESHOLD: float = 0.10  # |asym| < this → "symmetric"
 NLI_MODEL_NAME: str = "facebook/bart-large-mnli"
 CONSISTENCY_THRESHOLD: float = 0.70
 
-# ────────────────────── evaluation settings ───────────────────────────
-EVAL_NUM_SCENARIOS: int = 10
+# NLI score decomposition weights (entailment + neutral + contradiction = 1)
+NLI_NEUTRAL_WEIGHT: float = 0.60
+NLI_CONTRADICTION_WEIGHT: float = 0.40
 
 # ────────────────────── SHAP / surrogate ──────────────────────────────
-SHAP_TOP_K: int = 5  # number of top attributions to surface in narration
+SHAP_TOP_K: int = 5
 SURROGATE_N_ESTIMATORS: int = 100
+
+# ─────────────────────── LLM model selection ──────────────────────────
+# CPU-only (Colab free tier, local dev): compact 1.8B model
+LLM_MODEL_CPU: str = "Qwen/Qwen1.5-1.8B-Chat"
+# CUDA GPU available: use the 7B Instruct model in fp16 (~14 GB VRAM)
+LLM_MODEL_CUDA: str = "Qwen/Qwen2.5-7B-Instruct"
+
+
+def select_llm_model() -> str:
+    """Return the best available LLM model ID based on hardware.
+
+    Colab T4 / better: ``Qwen2.5-7B-Instruct`` loaded in fp16.
+    CPU-only: ``Qwen1.5-1.8B-Chat`` (compact, fits in RAM).
+    """
+    import torch  # local import — keeps config importable without torch
+    return LLM_MODEL_CUDA if torch.cuda.is_available() else LLM_MODEL_CPU
 
 
 @dataclass
 class PipelineConfig:
     """Aggregated runtime configuration passed through the pipeline.
 
-    Parameters
-    ----------
-    seed : int
-        Global random seed.
-    horizon : int
-        Number of forecast steps.
-    sharp_threshold : float
-        Normalised-slope threshold for "sharply" classification.
-    moderate_threshold : float
-        Normalised-slope threshold for "moderately" classification.
-    high_uncertainty : float
-        Relative-uncertainty threshold for "high".
-    low_uncertainty : float
-        Relative-uncertainty threshold for "low".
-    widening_threshold : float
-        Slope threshold for interval-width trend → "widening".
-    narrowing_threshold : float
-        Slope threshold for interval-width trend → "narrowing".
-    downside_factor : float
-        Factor applied to last observed value for downside risk flag.
-    upside_factor : float
-        Factor applied to last observed value for upside potential flag.
-    regime_pvalue : float
-        Welch t-test p-value threshold for regime shift.
-    asymmetry_threshold : float
-        Threshold for interval asymmetry label ("symmetric" vs skewed).
-    critical_thresholds : dict
-        Domain-specific critical thresholds (e.g. ``{"max_energy_kw": 500.0}``).
-    nli_model : str
-        HuggingFace model identifier for NLI scoring.
-    consistency_threshold : float
-        Minimum mean entailment score to declare consistency.
-    shap_top_k : int
-        Number of top SHAP attributions to show in narration.
-    attribution_method : str
-        Attribution method: "shap" (default) or "attention".
+    All fields default to the module-level constants above so callers
+    only need to override what they change.
     """
 
     seed: int = RANDOM_SEED
@@ -104,7 +91,7 @@ class PipelineConfig:
     upside_factor: float = UPSIDE_POTENTIAL_FACTOR
     regime_pvalue: float = REGIME_SHIFT_PVALUE
     asymmetry_threshold: float = ASYMMETRY_THRESHOLD
-    critical_thresholds: Dict[str, float] = field(default_factory=dict)
+    critical_thresholds: dict[str, float] = field(default_factory=dict)
     nli_model: str = NLI_MODEL_NAME
     consistency_threshold: float = CONSISTENCY_THRESHOLD
     shap_top_k: int = SHAP_TOP_K
