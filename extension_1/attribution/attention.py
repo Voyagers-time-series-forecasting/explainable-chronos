@@ -39,14 +39,24 @@ class AttentionAttributor:
         self,
         covariates: CovariateSet,
         attention_weights: dict[str, Any],
+        future_covariates: CovariateSet | None = None,
     ) -> AttributionResult:
-        """Compute covariate attributions using Attention Rollout.
+        """Compute covariate attributions using Attention Rollout over groups.
+
+        In Chronos-2, covariates are processed as separate 'groups'. The
+        ``enc_group_self_attn_weights`` tracks attention between the target
+        series and these covariates. Past and future values of a covariate 
+        are concatenated in time and belong to the same group.
 
         Parameters
         ----------
         covariates : CovariateSet
+            Past covariates (history window).
         attention_weights : dict
-            ``{"attentions": {"enc_time_self_attn_weights": ...}}``
+            ``{"attentions": {"enc_group_self_attn_weights": ...}}``
+        future_covariates : CovariateSet, optional
+            Provided for signature compatibility; Chronos treats past and 
+            future as a single continuous group.
 
         Returns
         -------
@@ -62,31 +72,35 @@ class AttentionAttributor:
         if attentions is None:
             raise ValueError("No attention weights captured from model.")
 
-        time_attn = attentions.get("enc_time_self_attn_weights")
-        if not time_attn:
-            raise ValueError("No enc_time_self_attn_weights available.")
+        group_attn = attentions.get("enc_group_self_attn_weights")
+        if not group_attn:
+            raise ValueError("No enc_group_self_attn_weights available. Model may not support group attention.")
 
-        rollout = self._compute_rollout(list(time_attn))
-        importance = self._aggregate_by_covariate(rollout, covariates)
+        # Compute rollout over the Group dimension (Target + Covariates)
+        rollout = self._compute_rollout(list(group_attn))
+
+        # The first row (index 0) is the Target's attention to all groups.
+        # Index 1 to N are the covariates in the exact order they were provided.
+        importance = self._aggregate_by_covariate(rollout, list(covariates.names))
 
         attributions = sorted(
             [
                 CovariateAttribution(
                     name=name,
                     importance_score=score,
-                    direction="positive" if score >= 0 else "negative",
-                    relative_impact_pct=abs(score) * 100,
+                    direction="positive", # Attention is strictly positive magnitude
+                    relative_impact_pct=score * 100,
                 )
                 for name, score in importance.items()
             ],
-            key=lambda a: abs(a.importance_score),
+            key=lambda a: a.importance_score,
             reverse=True,
         )[: self.top_k]
 
-        total = sum(abs(a.importance_score) for a in attributions)
+        total = sum(a.importance_score for a in attributions)
         if total > 0:
             for attr in attributions:
-                attr.relative_impact_pct = abs(attr.importance_score) / total * 100
+                attr.relative_impact_pct = (attr.importance_score / total) * 100
 
         return AttributionResult(
             attributions=attributions,
@@ -94,46 +108,49 @@ class AttentionAttributor:
         )
 
     def _compute_rollout(self, attentions: list[Any]) -> torch.Tensor:
-        """Compute Attention Rollout across all layers.
+        """Compute Attention Rollout across all layers for the Group dimension.
 
-        Each attention tensor has shape ``(batch, heads, seq_len, seq_len)``.
-        Returns a rollout matrix of shape ``(seq_len, seq_len)``.
+        Each group attention tensor has shape ``(Time, Heads, Groups, Groups)``.
+        Returns a rollout matrix of shape ``(Groups, Groups)``.
         """
         rollout: torch.Tensor | None = None
         for layer_attn in attentions:
-            avg = layer_attn.mean(dim=1)  # avg over heads
-            seq = avg.shape[-1]
-            identity = (
-                torch.eye(seq, device=avg.device, dtype=avg.dtype)
-                .unsqueeze(0)
-                .expand_as(avg)
-            )
+            # Average over Time (dim=0) and Heads (dim=1) -> shape: (Groups, Groups)
+            avg = layer_attn.mean(dim=(0, 1))
+            
+            groups = avg.shape[-1]
+            identity = torch.eye(groups, device=avg.device, dtype=avg.dtype)
+            
             layer_norm = avg + identity
+            # Normalize rows to sum to 1
             layer_norm = layer_norm / layer_norm.sum(dim=-1, keepdim=True)
+            
             rollout = layer_norm if rollout is None else torch.matmul(rollout, layer_norm)
-        return rollout.squeeze(0) if rollout is not None else torch.empty(0)
+            
+        return rollout if rollout is not None else torch.empty(0)
 
     def _aggregate_by_covariate(
         self,
         rollout: torch.Tensor,
-        covariates: CovariateSet,
+        covariate_names: list[str],
     ) -> dict[str, float]:
-        """Map rollout attention sums to covariate importance scores."""
-        n = len(covariates.names)
+        """Extract target-to-covariate attention scores.
+
+        Index 0 of the rollout matrix is the Target series.
+        Indices 1 to len(covariate_names) are the covariates.
+        """
         if rollout.numel() == 0:
-            return {name: 1.0 / n for name in covariates.names}
+            return {name: 1.0 / max(1, len(covariate_names)) for name in covariate_names}
 
-        seq = rollout.shape[-1]
-        if n == 0 or seq < n:
-            base = rollout.sum().item() / max(n, 1)
-            return {name: base for name in covariates.names}
-
-        seg = seq // n
-        rem = seq % n
+        # rollout shape: (Groups, Groups)
+        # We want row 0 (Target), starting from column 1 (Covariates)
+        target_attention = rollout[0, 1:].cpu().numpy()
+        
         result: dict[str, float] = {}
-        pos = 0
-        for i, name in enumerate(covariates.names):
-            end = pos + seg + (1 if i < rem else 0)
-            result[name] = rollout[:, pos:end].sum().item()
-            pos = end
+        for i, name in enumerate(covariate_names):
+            if i < len(target_attention):
+                result[name] = float(target_attention[i])
+            else:
+                result[name] = 0.0
+                
         return result

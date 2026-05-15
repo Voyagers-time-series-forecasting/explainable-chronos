@@ -68,6 +68,7 @@ def _plot_forecast(
     result: PipelineResult,
     actuals: Optional[np.ndarray],
     covariates: Optional[CovariateSet],
+    future_covariates: Optional[CovariateSet] = None,
 ) -> None:
     tail = history[-_HISTORY_TAIL:]
     h_steps = np.arange(-len(tail), 0)
@@ -89,24 +90,44 @@ def _plot_forecast(
             color="#e67e22", linewidth=1.5, linestyle="--", label="Actual",
         )
 
-    if covariates is not None and covariates.n_covariates > 0:  # defensive: always expected
+    has_past = covariates is not None and covariates.n_covariates > 0
+    has_future = future_covariates is not None and future_covariates.n_covariates > 0
+
+    if has_past or has_future:
         ax2 = ax.twinx()
-        cov_tail = covariates.values[-_HISTORY_TAIL:] if len(covariates.values) >= _HISTORY_TAIL else covariates.values
-        for i, name in enumerate(covariates.names):
-            ax2.plot(
-                h_steps[-len(cov_tail):],
-                cov_tail[:, i],
-                color=_CMAP_COV(i % 10),
-                linewidth=0.9,
-                alpha=0.6,
-                linestyle="-.",
-                label=name,
+        if has_past:
+            cov_tail = (
+                covariates.values[-_HISTORY_TAIL:]
+                if len(covariates.values) >= _HISTORY_TAIL
+                else covariates.values
             )
+            for i, name in enumerate(covariates.names):
+                ax2.plot(
+                    h_steps[-len(cov_tail):],
+                    cov_tail[:, i],
+                    color=_CMAP_COV(i % 10),
+                    linewidth=0.9,
+                    alpha=0.6,
+                    linestyle="-.",
+                    label=name,
+                )
+        if has_future:
+            n_past = covariates.n_covariates if has_past else 0
+            for i, name in enumerate(future_covariates.names):
+                ax2.plot(
+                    f_steps[: len(future_covariates.values)],
+                    future_covariates.values[:, i],
+                    color=_CMAP_COV((n_past + i) % 10),
+                    linewidth=0.9,
+                    alpha=0.6,
+                    linestyle=":",
+                    label=f"{name} (future)",
+                )
         ax2.set_ylabel("Covariates", fontsize=8, color="#555")
         ax2.tick_params(labelsize=7)
         ax2.legend(loc="upper left", fontsize=7, framealpha=0.5)
 
-    ax.set_title("Forecast", fontsize=10, fontweight="bold")
+    ax.set_title("Forecast + Covariates", fontsize=10, fontweight="bold")
     ax.set_xlabel("Steps (0 = forecast start)", fontsize=8)
     ax.set_ylabel("Value", fontsize=8)
     ax.legend(loc="upper right", fontsize=8)
@@ -116,7 +137,6 @@ def _plot_forecast(
 def _plot_attention(
     ax: plt.Axes,
     result: PipelineResult,
-    history: np.ndarray,
 ) -> None:
     signal = None
     if result.attention_weights:
@@ -158,9 +178,11 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     names = [a.name.replace("_", " ").title() for a in attrs]
     impacts = [a.relative_impact_pct for a in attrs]
     colors = [_NLI_GREEN if a.direction == "positive" else _NLI_RED for a in attrs]
+    is_future = ["(future)" in a.name for a in attrs]
 
     y = np.arange(len(names))
-    ax.barh(y, impacts, color=colors, alpha=0.8)
+    for j, (impact, color, future_flag) in enumerate(zip(impacts, colors, is_future)):
+        ax.barh(y[j], impact, color=color, alpha=0.8, hatch="//" if future_flag else None)
     ax.set_yticks(y)
     ax.set_yticklabels(names, fontsize=8)
     ax.set_xlabel("Relative impact (%)", fontsize=8)
@@ -170,8 +192,9 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
 
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor=_NLI_GREEN, alpha=0.8, label="Positive"),
-        Patch(facecolor=_NLI_RED, alpha=0.8, label="Negative"),
+        Patch(facecolor=_NLI_GREEN, alpha=0.8, label="Positive (past)"),
+        Patch(facecolor=_NLI_RED, alpha=0.8, label="Negative (past)"),
+        Patch(facecolor="#aaa", alpha=0.8, hatch="//", label="Future covariate"),
     ]
     ax.legend(handles=legend_elements, fontsize=7, loc="lower right")
 
@@ -223,6 +246,7 @@ def render_trace(
     verbalizer_type: str,
     output_dir: Path,
     covariates: Optional[CovariateSet] = None,
+    future_covariates: Optional[CovariateSet] = None,
 ) -> Path:
     """Render and save a multi-panel trace figure for one pipeline scenario.
 
@@ -240,6 +264,9 @@ def render_trace(
     output_dir : Path
         Directory where the PNG will be saved.
     covariates : CovariateSet, optional
+        Past covariates — overlaid on history portion of the forecast panel.
+    future_covariates : CovariateSet, optional
+        Future covariates — overlaid on forecast portion (dotted lines).
 
     Returns
     -------
@@ -268,8 +295,8 @@ def render_trace(
     ax_attribution = fig.add_subplot(gs[1, 1])
     ax_nli = fig.add_subplot(gs[2, :])
 
-    _plot_forecast(ax_forecast, history, result, actuals, covariates)
-    _plot_attention(ax_attention, result, history)
+    _plot_forecast(ax_forecast, history, result, actuals, covariates, future_covariates)
+    _plot_attention(ax_attention, result)
     _plot_attribution(ax_attribution, result)
     _plot_nli(ax_nli, result)
 

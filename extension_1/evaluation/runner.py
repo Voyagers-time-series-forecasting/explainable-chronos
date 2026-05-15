@@ -199,8 +199,8 @@ def extract_windows(
     df: pd.DataFrame,
     spec: DatasetSpec,
     mode: EvalMode,
-) -> List[Tuple[np.ndarray, np.ndarray, Optional[Dict[str, np.ndarray]]]]:
-    """Extract (history, future, past_covariates) windows.
+) -> List[Tuple[np.ndarray, np.ndarray, Optional[Dict[str, np.ndarray]], Optional[Dict[str, np.ndarray]]]]:
+    """Extract (history, future, past_covariates, future_covariates) windows.
 
     Uses the official test split when available so results are
     comparable with published benchmarks.
@@ -236,19 +236,26 @@ def extract_windows(
         future = target[end:future_end]
 
         past_cov: Optional[Dict[str, np.ndarray]] = None
+        future_cov: Optional[Dict[str, np.ndarray]] = None
         if spec.covariate_cols:
             past_cov = {}
+            future_cov = {}
             abs_start = offset + start
             abs_end = offset + end
+            abs_future_end = abs_end + mode.horizon
             for col in spec.covariate_cols:
                 if col in df.columns:
                     col_arr = df[col].dropna().to_numpy(dtype=np.float64)
                     if len(col_arr) >= abs_end:
                         past_cov[col] = col_arr[abs_start:abs_end]
+                    if len(col_arr) >= abs_future_end:
+                        future_cov[col] = col_arr[abs_end:abs_future_end]
             if not past_cov:
                 past_cov = None
+            if not future_cov:
+                future_cov = None
 
-        windows.append((history, future, past_cov))
+        windows.append((history, future, past_cov, future_cov))
 
     logger.info(
         "%s: %d windows | history=%d | horizon=%d | test_split=%s",
@@ -443,14 +450,16 @@ def run_evaluation(
             logger.error("Failed to load %s: %s", spec.name, e)
             continue
 
-        for w_idx, (history, future, past_cov) in enumerate(windows):
+        for w_idx, (history, future, past_cov, future_cov) in enumerate(windows):
 
-            if not past_cov:
+            if not past_cov or not future_cov:
                 logger.warning(
-                    "Skipping window %d [%s] — no covariates available.", w_idx, spec.name
+                    "Skipping window %d [%s] — past or future covariates unavailable.",
+                    w_idx, spec.name,
                 )
                 continue
             cov_set = _make_covariate_set(past_cov)
+            future_cov_set = _make_covariate_set(future_cov)
             window_results: Dict[str, PipelineResult] = {}
 
             for v_type, pipe in pipelines:
@@ -459,6 +468,7 @@ def run_evaluation(
                         history,
                         horizon=len(future),
                         covariates=cov_set,
+                        future_covariates=future_cov_set,
                     )
                 except Exception as e:
                     logger.warning(
@@ -487,13 +497,12 @@ def run_evaluation(
                     "rst_relations": ",".join(result.verbalization.rst_relations),
                 }
 
-                if result.attribution.attributions:
-                    top = result.attribution.attributions[0]
-                    record["top_covariate"] = top.name
-                    record["top_covariate_impact_pct"] = top.relative_impact_pct
-                else:
-                    record["top_covariate"] = None
-                    record["top_covariate_impact_pct"] = None
+                past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
+                future_attrs = [a for a in result.attribution.attributions if "(future)" in a.name]
+                record["top_covariate"] = past_attrs[0].name if past_attrs else None
+                record["top_covariate_impact_pct"] = past_attrs[0].relative_impact_pct if past_attrs else None
+                record["top_future_covariate"] = future_attrs[0].name if future_attrs else None
+                record["top_future_covariate_impact_pct"] = future_attrs[0].relative_impact_pct if future_attrs else None
 
                 records.append(record)
                 logger.info(
@@ -517,6 +526,7 @@ def run_evaluation(
                             verbalizer_type=v_type,
                             output_dir=traces_dir,
                             covariates=cov_set,
+                            future_covariates=future_cov_set,
                         )
                     except Exception as te:
                         logger.warning("Trace rendering failed [%s/%s]: %s", spec.name, v_type, te)

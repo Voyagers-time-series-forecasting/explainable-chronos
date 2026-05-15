@@ -99,5 +99,5 @@ results/extension_1/
 
 ## Notes
 
-- All datasets require covariates; windows without covariate data are skipped.
+- Both past and future covariates are required per window; windows where either cannot be extracted are skipped.
 - `--seed` is not exposed through the CLI; the default seed `42` is used.

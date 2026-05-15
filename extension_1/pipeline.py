@@ -40,6 +40,7 @@ class PipelineResult:
     verbalization: VerbalizationResult
     consistency_report: ConsistencyReport
     attention_weights: Optional[dict] = None
+    future_covariates: Optional[CovariateSet] = None
 
 
 class VerbalizationPipeline:
@@ -70,6 +71,7 @@ class VerbalizationPipeline:
         time_series: np.ndarray | pd.Series,
         horizon: int | None = None,
         covariates: CovariateSet | None = None,
+        future_covariates: CovariateSet | None = None,
     ) -> PipelineResult:
         """Execute the full pipeline.
 
@@ -78,7 +80,9 @@ class VerbalizationPipeline:
         time_series : np.ndarray | pd.Series
         horizon : int, optional
         covariates : CovariateSet
-            Required. Covariate arrays aligned with the history window.
+            Required. Past covariate arrays aligned with the history window.
+        future_covariates : CovariateSet, optional
+            Future covariate arrays aligned with the forecast horizon.
 
         Returns
         -------
@@ -92,9 +96,13 @@ class VerbalizationPipeline:
 
         # Stage A — Forecast
         past_cov = {name: covariates.values[:, i] for i, name in enumerate(covariates.names)}
+        fut_cov = (
+            {name: future_covariates.values[:, i] for i, name in enumerate(future_covariates.names)}
+            if future_covariates is not None else None
+        )
 
         forecast_result = self.forecast_provider.predict(
-            time_series, horizon=h, past_covariates=past_cov,
+            time_series, horizon=h, past_covariates=past_cov, future_covariates=fut_cov,
         )
 
         if isinstance(forecast_result, tuple):
@@ -115,7 +123,8 @@ class VerbalizationPipeline:
         # Stage B — Covariate attribution (attention rollout)
         attribution = AttentionAttributor(
             top_k=self.config.attribution_top_k,
-        ).explain(covariates, attention_weights=attention_weights)
+        ).explain(covariates, attention_weights=attention_weights,
+                  future_covariates=future_covariates)
         logger.info(
             "Attribution: top=%s (%.1f%%)",
             attribution.attributions[0].name if attribution.attributions else "?",
@@ -141,4 +150,5 @@ class VerbalizationPipeline:
             verbalization=verbalization,
             consistency_report=report,
             attention_weights=attention_weights,
+            future_covariates=future_covariates,
         )
