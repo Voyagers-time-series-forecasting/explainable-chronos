@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "explainable-chronos"
+version = "0.1.0"
+description = "Post-hoc explainability pipeline for Chronos-2 time-series forecasting"
+requires-python = ">=3.10"
+dependencies = [
+    # Core scientific stack
+    "numpy>=1.24,<2.0",
+    "pandas>=2.0,<3.0",
+    "scipy>=1.10,<2.0",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7,<4.0",
+
+    # PyTorch — install the CUDA variant manually on Colab if needed:
+    #   !pip install torch --index-url https://download.pytorch.org/whl/cu121
+    "torch>=2.0,<3.0",
+
+    # Transformers — 4.44+ required for Qwen2.5 support
+    "transformers>=4.44,<5.0",
+
+    # Efficient multi-device model loading (required for device_map / fp16 helpers)
+    "accelerate>=0.30",
+
+    # Chronos-2 zero-shot forecasting backbone
+    "chronos-forecasting>=2.0",
+
+
+    # Dataset utilities
+    "yfinance>=0.2.0",
+    "datasets>=2.18.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4,<9.0"]
+
+[project.scripts]
+# After `pip install -e .` you can run: explainable-chronos ext1 evaluate
+explainable-chronos = "run_extensions:main"
+
+[tool.setuptools]
+# Include run_extensions.py as a top-level installable module
+py-modules = ["run_extensions"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["extension_1*", "shared*"]

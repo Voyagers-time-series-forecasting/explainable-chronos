@@ -1,17 +1,9 @@
 """
-Module 4 — Consistency Scorer.
+NLI-based consistency scorer.
 
 Evaluates whether a verbalized forecast summary is factually consistent
 with the underlying numerical features using a Natural Language
 Inference (NLI) model from HuggingFace.
-
-Key concept:
-    For each sentence in the verbalization the scorer constructs a
-    *(premise, hypothesis)* pair.  The **premise** is a structured
-    textual rendering of the numerical features that generated the
-    sentence.  The **hypothesis** is the sentence itself.  An NLI
-    model then estimates the probability that the premise *entails*
-    the hypothesis.
 """
 
 from __future__ import annotations
@@ -23,8 +15,8 @@ from typing import Any, Dict, List
 import numpy as np
 from transformers import pipeline as hf_pipeline  # type: ignore
 
-from config import CONSISTENCY_THRESHOLD, NLI_MODEL_NAME
-from verbalizer import VerbalizationResult
+from extension_1.config import CONSISTENCY_THRESHOLD, NLI_MODEL_NAME
+from extension_1.verbalization.types import VerbalizationResult
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +29,10 @@ class SentenceScore:
     Attributes
     ----------
     sentence : str
-        The verbalized sentence (hypothesis).
     premise : str
-        Rendered premise used for NLI.
     entailment_prob : float
-        Softmax probability of entailment.
     neutral_prob : float
-        Softmax probability of neutral.
     contradiction_prob : float
-        Softmax probability of contradiction.
     """
 
     sentence: str
@@ -62,13 +49,9 @@ class ConsistencyReport:
     Attributes
     ----------
     overall_score : float
-        Mean entailment probability across all sentences.
     sentence_scores : list[SentenceScore]
-        Per-sentence detail.
     is_consistent : bool
-        ``True`` when ``overall_score >= threshold``.
     threshold : float
-        The consistency threshold used.
     """
 
     overall_score: float
@@ -79,22 +62,7 @@ class ConsistencyReport:
 
 # ──────────── premise renderer ────────────────────────────────────────
 def render_premise(grounding: Dict[str, Any]) -> str:
-    """Convert a grounding dictionary to an unambiguous English premise.
-
-    The premise is a self-contained mini-paragraph that an NLI model
-    can read to decide whether a hypothesis sentence is entailed.
-
-    Parameters
-    ----------
-    grounding : dict
-        Feature-level metadata produced by the verbaliser's grounding
-        mechanism.
-
-    Returns
-    -------
-    str
-        Plain-English premise string.
-    """
+    """Convert a grounding dictionary to an unambiguous English premise."""
     gtype = grounding.get("type", "unknown")
 
     if gtype == "trend":
@@ -126,16 +94,10 @@ def render_premise(grounding: Dict[str, Any]) -> str:
     if gtype == "risk":
         parts: list[str] = []
         if grounding.get("downside_risk"):
-            parts.append(
-                "The lower bound (P10) falls more than 20% below current levels."
-            )
+            parts.append("The lower bound (P10) falls more than 20% below current levels.")
         if grounding.get("upside_potential"):
-            parts.append(
-                "The upper bound (P90) exceeds 20% above current levels."
-            )
-        if not parts:
-            parts.append("No significant tail risks are detected.")
-        return " ".join(parts)
+            parts.append("The upper bound (P90) exceeds 20% above current levels.")
+        return " ".join(parts) if parts else "No significant tail risks are detected."
 
     if gtype == "regime_shift":
         pval = grounding.get("regime_shift_pvalue", 1.0)
@@ -146,10 +108,8 @@ def render_premise(grounding: Dict[str, Any]) -> str:
         )
 
     if gtype == "combined":
-        groundings_list = grounding.get("groundings", [])
-        return " ".join([render_premise(g) for g in groundings_list])
+        return " ".join(render_premise(g) for g in grounding.get("groundings", []))
 
-    # RST-based groundings
     if gtype.startswith("rst_"):
         relation = grounding.get("relation", "unknown")
         nucleus = grounding.get("nucleus", "")
@@ -159,19 +119,17 @@ def render_premise(grounding: Dict[str, Any]) -> str:
             f"Nucleus: {nucleus}. Satellite: {satellite}."
         )
 
-    # Attribution groundings
     if gtype == "attribution":
         name = grounding.get("covariate_name", "unknown")
         direction = grounding.get("direction", "unknown")
         impact = grounding.get("relative_impact_pct", 0)
-        shap_val = grounding.get("shap_value", 0)
+        importance_score = grounding.get("importance_score", 0)
         return (
             f"The covariate '{name}' has a {direction} effect on the forecast. "
-            f"Its SHAP attribution value is {shap_val:.4f}, contributing "
+            f"Its attribution importance score is {importance_score:.4f}, contributing "
             f"{impact:.1f}% of the total forecast attribution."
         )
 
-    # fallback
     return " ".join(f"{k}: {v}" for k, v in grounding.items())
 
 
@@ -186,8 +144,7 @@ class NLIConsistencyScorer:
     device : str
         Torch device string.
     threshold : float
-        Entailment probability above which a sentence is deemed
-        consistent.
+        Entailment probability above which a sentence is consistent.
     """
 
     def __init__(
@@ -202,13 +159,6 @@ class NLIConsistencyScorer:
         self._pipeline: Any = None
 
     def _load(self) -> Any:
-        """Load the HuggingFace zero-shot-classification pipeline.
-
-        Returns
-        -------
-        Any
-            A ``transformers.Pipeline`` instance.
-        """
         if self._pipeline is None:
             logger.info("Loading NLI model %s …", self.model_name)
             self._pipeline = hf_pipeline(
@@ -218,28 +168,22 @@ class NLIConsistencyScorer:
             )
         return self._pipeline
 
-    def score(
-        self,
-        verbalization: VerbalizationResult,
-    ) -> ConsistencyReport:
+    def score(self, verbalization: VerbalizationResult) -> ConsistencyReport:
         """Compute NLI consistency for every sentence.
 
         Parameters
         ----------
         verbalization : VerbalizationResult
-            Output of the verbaliser (sentences + grounding).
 
         Returns
         -------
         ConsistencyReport
-            Per-sentence and aggregate scores.
         """
         pipe = self._load()
         sentence_scores: List[SentenceScore] = []
 
         for idx, sentence in enumerate(verbalization.sentences):
-            key = f"sentence_{idx}"
-            grounding = verbalization.grounding.get(key, {})
+            grounding = verbalization.grounding.get(f"sentence_{idx}", {})
             premise = render_premise(grounding)
 
             result = pipe(
@@ -250,21 +194,17 @@ class NLIConsistencyScorer:
             )
 
             entailment_prob = float(result["scores"][0])
-            neutral_prob = (1.0 - entailment_prob) * 0.6
-            contradiction_prob = (1.0 - entailment_prob) * 0.4
-
             sentence_scores.append(
                 SentenceScore(
                     sentence=sentence,
                     premise=premise,
                     entailment_prob=entailment_prob,
-                    neutral_prob=neutral_prob,
-                    contradiction_prob=contradiction_prob,
+                    neutral_prob=(1.0 - entailment_prob) * 0.6,
+                    contradiction_prob=(1.0 - entailment_prob) * 0.4,
                 )
             )
 
         overall = float(np.mean([s.entailment_prob for s in sentence_scores]))
-
         return ConsistencyReport(
             overall_score=overall,
             sentence_scores=sentence_scores,

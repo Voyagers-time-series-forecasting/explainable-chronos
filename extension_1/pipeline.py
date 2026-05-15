@@ -1,31 +1,26 @@
-"""
-Module 5 — Pipeline.
-
-Orchestrates the full end-to-end pipeline:
-
-    Forecast → Feature Extraction → [Covariate Attribution] → Verbalization → NLI Consistency Scoring
-"""
+"""Pipeline — orchestrates the full end-to-end pipeline."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 
-from config import PipelineConfig
-from consistency_scorer import ConsistencyReport, NLIConsistencyScorer
-from covariate_attribution import AttributionResult, CovariateSet, SurrogateExplainer
-from feature_extractor import ForecastFeatures, extract_features
+from extension_1.config import PipelineConfig
+from extension_1.evaluation.scoring import ConsistencyReport, NLIConsistencyScorer
+from extension_1.attribution.attention import AttentionAttributor
+from extension_1.attribution.types import AttributionResult, CovariateSet
+from extension_1.features.extractor import ForecastFeatures, extract_features
+from extension_1.verbalization.template import TemplateVerbalizer, VerbalizationResult
+from extension_1.verbalization.llm import LLMVerbalizer
 from shared.forecast_provider import ChronosForecastProvider, ForecastDict
-from verbalizer import TemplateVerbalizer, VerbalizationResult, LLMVerbalizer
 
 logger = logging.getLogger(__name__)
 
 
-# ───────────────── result dataclass ───────────────────────────────────
 @dataclass
 class PipelineResult:
     """Complete output of a single pipeline run.
@@ -33,38 +28,30 @@ class PipelineResult:
     Attributes
     ----------
     forecast : ForecastDict
-        Raw quantile forecast.
     features : ForecastFeatures
-        Extracted interpretable features.
     attribution : AttributionResult | None
-        SHAP-based covariate attributions (None when no covariates).
     verbalization : VerbalizationResult
-        Natural-language summary with grounding.
     consistency_report : ConsistencyReport
-        NLI factual-consistency scores.
     """
 
     forecast: ForecastDict
     features: ForecastFeatures
-    attribution: Optional[AttributionResult]
+    attribution: AttributionResult
     verbalization: VerbalizationResult
     consistency_report: ConsistencyReport
+    attention_weights: Optional[dict] = None
+    future_covariates: Optional[CovariateSet] = None
 
 
-# ──────────── pipeline class ──────────────────────────────────────────
 class VerbalizationPipeline:
     """End-to-end forecast verbalization and consistency pipeline.
 
     Parameters
     ----------
     forecast_provider : ChronosForecastProvider
-        Chronos-2 forecast provider.
-    verbalizer : TemplateVerbalizer
-        Sentence planner.
+    verbalizer : TemplateVerbalizer | LLMVerbalizer
     scorer : NLIConsistencyScorer
-        NLI consistency scorer.
     config : PipelineConfig, optional
-        Runtime configuration.
     """
 
     def __init__(
@@ -84,87 +71,71 @@ class VerbalizationPipeline:
         time_series: np.ndarray | pd.Series,
         horizon: int | None = None,
         covariates: CovariateSet | None = None,
+        future_covariates: CovariateSet | None = None,
     ) -> PipelineResult:
         """Execute the full pipeline.
 
         Parameters
         ----------
         time_series : np.ndarray | pd.Series
-            Historical time-series values.
         horizon : int, optional
-            Forecast steps; falls back to ``config.horizon``.
-        covariates : CovariateSet, optional
-            Named covariates for SHAP attribution (Stage B).
+        covariates : CovariateSet
+            Required. Past covariate arrays aligned with the history window.
+        future_covariates : CovariateSet, optional
+            Future covariate arrays aligned with the forecast horizon.
 
         Returns
         -------
         PipelineResult
-            Aggregated outputs from every stage.
         """
+        if covariates is None:
+            raise ValueError("covariates is required — univariate mode is not supported.")
+
         h = horizon or self.config.horizon
         logger.info("Running pipeline with horizon=%d …", h)
 
         # Stage A — Forecast
-        # Stage A — Forecast
-        past_cov = None
-        if covariates is not None:
-            past_cov = {
-                name: covariates.values[:, i]
-                for i, name in enumerate(covariates.names)
-            }
+        past_cov = {name: covariates.values[:, i] for i, name in enumerate(covariates.names)}
+        fut_cov = (
+            {name: future_covariates.values[:, i] for i, name in enumerate(future_covariates.names)}
+            if future_covariates is not None else None
+        )
 
         forecast_result = self.forecast_provider.predict(
-                time_series,
-                horizon=h,
-                past_covariates=past_cov,
+            time_series, horizon=h, past_covariates=past_cov, future_covariates=fut_cov,
         )
-        
-        # Handle attention extraction if enabled
+
         if isinstance(forecast_result, tuple):
             forecast, attention_weights = forecast_result
         else:
-            forecast = forecast_result
-            attention_weights = None
-            
+            forecast, attention_weights = forecast_result, None
+
         logger.info("Forecast produced (P10/P50/P90 × %d steps).", h)
 
         # Stage A — Feature extraction
         features = extract_features(forecast, config=self.config)
         logger.info(
             "Features: trend=%s %s, uncertainty=%s %s",
-            features.trend_magnitude,
-            features.trend_direction,
-            features.uncertainty_level,
-            features.uncertainty_trend,
+            features.trend_magnitude, features.trend_direction,
+            features.uncertainty_level, features.uncertainty_trend,
         )
 
-        # Stage B — Covariate attribution (optional)
-        attribution: AttributionResult | None = None
-        if covariates is not None:
-            from extension_1.covariate_attribution import create_attributor
-            attribution = create_attributor(
-                method=self.config.attribution_method,
-                covariates=covariates,
-                forecast=np.asarray(forecast["p50"]),
-                attention_weights=attention_weights,
-                random_state=self.config.seed,
-                top_k=self.config.shap_top_k,
-            )
-            logger.info(
-                "Attribution (%s): R²=%.4f, top=%s (%.1f%%)",
-                self.config.attribution_method.upper(),
-                attribution.surrogate_r2,
-                attribution.attributions[0].name if attribution.attributions else "?",
-                attribution.attributions[0].relative_impact_pct
-                if attribution.attributions
-                else 0,
-            )
+        # Stage B — Covariate attribution (attention rollout)
+        attribution = AttentionAttributor(
+            top_k=self.config.attribution_top_k,
+        ).explain(covariates, attention_weights=attention_weights,
+                  future_covariates=future_covariates)
+        logger.info(
+            "Attribution: top=%s (%.1f%%)",
+            attribution.attributions[0].name if attribution.attributions else "?",
+            attribution.attributions[0].relative_impact_pct if attribution.attributions else 0,
+        )
 
         # Stage C — Verbalization
         verbalization = self.verbalizer.verbalize(features, attribution=attribution)
         logger.info("Verbalization: %s", verbalization.summary)
 
-        # Consistency scoring
+        # Stage D — Consistency scoring
         report = self.scorer.score(verbalization)
         logger.info(
             "Consistency: %.4f (%s)",
@@ -178,4 +149,6 @@ class VerbalizationPipeline:
             attribution=attribution,
             verbalization=verbalization,
             consistency_report=report,
+            attention_weights=attention_weights,
+            future_covariates=future_covariates,
         )
