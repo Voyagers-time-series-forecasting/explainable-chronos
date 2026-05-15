@@ -9,6 +9,7 @@ from typing import Any
 
 from extension_1.config import RANDOM_SEED
 from extension_1.verbalization.types import VerbalizationResult
+from extension_1.verbalization.trajectory import verbalize_temporal_focus, verbalize_trajectory
 from extension_1.attribution.types import AttributionResult
 from extension_1.features.extractor import ForecastFeatures
 
@@ -241,7 +242,12 @@ class TemplateVerbalizer:
             "horizon": features.horizon,
         }
 
-        # ── Sentence 2: Uncertainty ───────────────────────────────
+        # ── Sentence 2: Trajectory (concrete P50 values + turning points) ──
+        if features.trajectory:
+            traj_sentence, traj_grounding = verbalize_trajectory(features.trajectory)
+            sentences.append(traj_sentence)
+            grounding[f"sentence_{len(sentences) - 1}"] = traj_grounding
+
         sentences.append(
             f"Prediction intervals are "
             f"{rng.choice(_UNCERTAINTY_LEVEL_PHRASES[features.uncertainty_level])} and "
@@ -302,6 +308,16 @@ class TemplateVerbalizer:
                     "direction": attr.direction,
                     "relative_impact_pct": attr.relative_impact_pct,
                 }
+
+        # ── Temporal focus sentence (conditional on non-trivial saliency) ──
+        if attribution and attribution.temporal:
+            history_length = len(attribution.temporal[0].saliency)
+            tpf_sentence, tpf_grounding = verbalize_temporal_focus(
+                attribution.temporal, history_length
+            )
+            if tpf_sentence:
+                sentences.append(tpf_sentence)
+                grounding[f"sentence_{len(sentences) - 1}"] = tpf_grounding
 
         return VerbalizationResult(
             summary=" ".join(sentences),

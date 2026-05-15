@@ -17,6 +17,7 @@ import numpy as np
 
 from extension_1.attribution.types import CovariateSet
 from extension_1.pipeline import PipelineResult
+from extension_1.verbalization.trajectory import verbalize_temporal_focus, verbalize_trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,48 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     ax.legend(handles=legend_elements, fontsize=7, loc="lower right")
 
 
+def _plot_temporal_saliency(ax: plt.Axes, result: PipelineResult) -> None:
+    temporal = getattr(result.attribution, "temporal", None) if result.attribution else None
+
+    if not temporal:
+        ax.text(
+            0.5, 0.5, "No temporal saliency data",
+            ha="center", va="center", transform=ax.transAxes, fontsize=9, color="#888",
+        )
+        ax.set_title("Temporal Saliency", fontsize=10, fontweight="bold")
+        ax.axis("off")
+        return
+
+    history_length = len(temporal[0].saliency)
+    steps = np.arange(history_length)
+
+    for i, ta in enumerate(temporal):
+        color = _CMAP_COV(i % 10)
+        ax.plot(steps, ta.saliency, color=color, linewidth=1.4, label=ta.covariate_name)
+
+        # Shade the top-25% attention region
+        threshold = np.percentile(ta.saliency, 75)
+        ax.fill_between(
+            steps, 0, ta.saliency,
+            where=ta.saliency >= threshold,
+            color=color, alpha=0.20,
+        )
+
+    ax.set_title("Temporal Saliency (per covariate)", fontsize=10, fontweight="bold")
+    ax.set_xlabel("History step (0 = oldest)", fontsize=8)
+    ax.set_ylabel("Normalised attention", fontsize=8)
+    ax.tick_params(labelsize=8)
+    ax.legend(fontsize=7, loc="upper left", framealpha=0.5)
+
+    # Annotate with the temporal-focus sentence if it's non-trivial
+    tpf_sentence, _ = verbalize_temporal_focus(temporal, history_length)
+    if tpf_sentence:
+        ax.set_xlabel(
+            f"History step (0 = oldest)   |   {tpf_sentence}",
+            fontsize=7, color="#555",
+        )
+
+
 def _plot_nli(ax: plt.Axes, result: PipelineResult) -> None:
     report = result.consistency_report
     sentences = report.sentence_scores
@@ -261,17 +304,17 @@ def render_trace(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig = Figure(figsize=(16, 11), constrained_layout=True)
-    canvas = FigureCanvasAgg(fig)
+    fig = Figure(figsize=(16, 14), constrained_layout=True)
+    FigureCanvasAgg(fig)
     fig.suptitle(
         f"Trace — {dataset_name}  window {window_idx:02d}  [{verbalizer_type}]",
         fontsize=11, fontweight="bold",
     )
 
     gs = gridspec.GridSpec(
-        3, 2,
+        4, 2,
         figure=fig,
-        height_ratios=[3, 2.2, 1.8],
+        height_ratios=[3, 2.2, 2.0, 1.8],
         hspace=0.35,
         wspace=0.30,
     )
@@ -279,11 +322,13 @@ def render_trace(
     ax_forecast = fig.add_subplot(gs[0, :])
     ax_attention = fig.add_subplot(gs[1, 0])
     ax_attribution = fig.add_subplot(gs[1, 1])
-    ax_nli = fig.add_subplot(gs[2, :])
+    ax_temporal = fig.add_subplot(gs[2, :])
+    ax_nli = fig.add_subplot(gs[3, :])
 
     _plot_forecast(ax_forecast, history, result, actuals, covariates, future_covariates)
     _plot_attention(ax_attention, result)
     _plot_attribution(ax_attribution, result)
+    _plot_temporal_saliency(ax_temporal, result)
     _plot_nli(ax_nli, result)
 
     fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.png"
@@ -301,7 +346,21 @@ def render_trace(
             f.write("--- 1. EXTRACTED FEATURES (CONTEXT) ---\n")
             if hasattr(result, "features") and result.features:
                 for k, v in result.features.to_dict().items():
+                    if k in ("trajectory", "trajectory_sentence"):
+                        continue  # printed separately below
                     f.write(f"{k}: {v}\n")
+                # Trajectory block
+                if result.features.trajectory:
+                    traj_sentence, _ = verbalize_trajectory(result.features.trajectory)
+                    f.write("\n--- 1b. TRAJECTORY NARRATION ---\n")
+                    f.write(traj_sentence + "\n")
+                    traj = result.features.trajectory
+                    tps = traj.get("turning_points", [])
+                    if tps:
+                        f.write("Turning points:\n")
+                        for tp in tps:
+                            f.write(f"  step {tp.step}: {tp.kind} at {tp.value:.3f}\n")
+                    f.write(f"Overall range: {traj.get('overall_range', ('?', '?'))}\n")
             else:
                 f.write("No features extracted.\n")
             f.write("\n")
