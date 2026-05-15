@@ -11,6 +11,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import numpy as np
 
 from extension_1.attribution.types import CovariateSet
@@ -91,38 +93,24 @@ def _plot_forecast(
         )
 
     has_past = covariates is not None and covariates.n_covariates > 0
-    has_future = future_covariates is not None and future_covariates.n_covariates > 0
 
-    if has_past or has_future:
+    if has_past:
         ax2 = ax.twinx()
-        if has_past:
-            cov_tail = (
-                covariates.values[-_HISTORY_TAIL:]
-                if len(covariates.values) >= _HISTORY_TAIL
-                else covariates.values
+        cov_tail = (
+            covariates.values[-_HISTORY_TAIL:]
+            if len(covariates.values) >= _HISTORY_TAIL
+            else covariates.values
+        )
+        for i, name in enumerate(covariates.names):
+            ax2.plot(
+                h_steps[-len(cov_tail):],
+                cov_tail[:, i],
+                color=_CMAP_COV(i % 10),
+                linewidth=0.9,
+                alpha=0.6,
+                linestyle="-.",
+                label=name,
             )
-            for i, name in enumerate(covariates.names):
-                ax2.plot(
-                    h_steps[-len(cov_tail):],
-                    cov_tail[:, i],
-                    color=_CMAP_COV(i % 10),
-                    linewidth=0.9,
-                    alpha=0.6,
-                    linestyle="-.",
-                    label=name,
-                )
-        if has_future:
-            n_past = covariates.n_covariates if has_past else 0
-            for i, name in enumerate(future_covariates.names):
-                ax2.plot(
-                    f_steps[: len(future_covariates.values)],
-                    future_covariates.values[:, i],
-                    color=_CMAP_COV((n_past + i) % 10),
-                    linewidth=0.9,
-                    alpha=0.6,
-                    linestyle=":",
-                    label=f"{name} (future)",
-                )
         ax2.set_ylabel("Covariates", fontsize=8, color="#555")
         ax2.tick_params(labelsize=7)
         ax2.legend(loc="upper left", fontsize=7, framealpha=0.5)
@@ -151,15 +139,14 @@ def _plot_attention(
         ax.axis("off")
         return
 
-    # Align signal with history tail
+    # Plot signal against Patch Index instead of raw time steps
+    # since we don't have the exact tokenizer patch stride/padding here.
     seq = len(signal)
-    tail_len = min(seq, _HISTORY_TAIL)
-    sig = signal[-tail_len:]
-    steps = np.arange(-tail_len, 0)
+    patches = np.arange(seq)
 
-    ax.bar(steps, sig, width=0.8, color="#8e44ad", alpha=0.75)
-    ax.set_title("Attention Rollout (per history timestep)", fontsize=10, fontweight="bold")
-    ax.set_xlabel("History offset (0 = last observed)", fontsize=8)
+    ax.bar(patches, signal, width=0.8, color="#8e44ad", alpha=0.75)
+    ax.set_title("Temporal Attention (per model patch)", fontsize=10, fontweight="bold")
+    ax.set_xlabel("Patch Index (0 = oldest context)", fontsize=8)
     ax.set_ylabel("Normalised attention", fontsize=8)
     ax.tick_params(labelsize=8)
 
@@ -178,11 +165,10 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     names = [a.name.replace("_", " ").title() for a in attrs]
     impacts = [a.relative_impact_pct for a in attrs]
     colors = [_NLI_GREEN if a.direction == "positive" else _NLI_RED for a in attrs]
-    is_future = ["(future)" in a.name for a in attrs]
 
     y = np.arange(len(names))
-    for j, (impact, color, future_flag) in enumerate(zip(impacts, colors, is_future)):
-        ax.barh(y[j], impact, color=color, alpha=0.8, hatch="//" if future_flag else None)
+    for j, (impact, color) in enumerate(zip(impacts, colors)):
+        ax.barh(y[j], impact, color=color, alpha=0.8)
     ax.set_yticks(y)
     ax.set_yticklabels(names, fontsize=8)
     ax.set_xlabel("Relative impact (%)", fontsize=8)
@@ -192,9 +178,8 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
 
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor=_NLI_GREEN, alpha=0.8, label="Positive (past)"),
-        Patch(facecolor=_NLI_RED, alpha=0.8, label="Negative (past)"),
-        Patch(facecolor="#aaa", alpha=0.8, hatch="//", label="Future covariate"),
+        Patch(facecolor=_NLI_GREEN, alpha=0.8, label="Positive impact"),
+        Patch(facecolor=_NLI_RED, alpha=0.8, label="Negative impact"),
     ]
     ax.legend(handles=legend_elements, fontsize=7, loc="lower right")
 
@@ -276,7 +261,8 @@ def render_trace(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig = plt.figure(figsize=(16, 11), constrained_layout=True)
+    fig = Figure(figsize=(16, 11), constrained_layout=True)
+    canvas = FigureCanvasAgg(fig)
     fig.suptitle(
         f"Trace — {dataset_name}  window {window_idx:02d}  [{verbalizer_type}]",
         fontsize=11, fontweight="bold",
@@ -303,6 +289,54 @@ def render_trace(
     fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.png"
     out_path = output_dir / fname
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
     logger.info("Trace saved: %s", out_path)
+    
+    # Save accompanying text trace
+    txt_fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.txt"
+    txt_out_path = output_dir / txt_fname
+    try:
+        with open(txt_out_path, "w", encoding="utf-8") as f:
+            f.write(f"=== TRACE CONTEXT: {dataset_name} Window {window_idx:02d} [{verbalizer_type}] ===\n\n")
+            
+            f.write("--- 1. EXTRACTED FEATURES (CONTEXT) ---\n")
+            if hasattr(result, "features") and result.features:
+                for k, v in result.features.to_dict().items():
+                    f.write(f"{k}: {v}\n")
+            else:
+                f.write("No features extracted.\n")
+            f.write("\n")
+            
+            f.write("--- 2. ATTRIBUTION ---\n")
+            if hasattr(result, "attribution") and result.attribution and result.attribution.attributions:
+                for a in result.attribution.attributions[:result.attribution.top_k]:
+                    f.write(f"{a.name}: {a.relative_impact_pct:.1f}% ({a.direction})\n")
+            else:
+                f.write("No attribution data.\n")
+            f.write("\n")
+            
+            f.write("--- 3. RST TEMPLATE / DRAFT ---\n")
+            verb_res = result.verbalization
+            if getattr(verb_res, "draft_summary", None):
+                f.write(f"DRAFT SUMMARY:\n{verb_res.draft_summary}\n\n")
+            if getattr(verb_res, "rst_relations", None):
+                f.write("RST RELATIONS USED:\n")
+                for r in verb_res.rst_relations:
+                    f.write(f"- {r}\n")
+            else:
+                f.write("No RST relations triggered.\n")
+            f.write("\n")
+            
+            f.write("--- 4. LLM PROMPT ---\n")
+            if getattr(verb_res, "prompt", None):
+                f.write(verb_res.prompt)
+            else:
+                f.write("No LLM Prompt used.\n")
+            f.write("\n\n")
+            
+            f.write("--- 5. FINAL RESULT ---\n")
+            f.write(verb_res.summary)
+            f.write("\n")
+    except Exception as e:
+        logger.warning(f"Failed to write text trace: {e}")
+
     return out_path

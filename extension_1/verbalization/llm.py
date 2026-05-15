@@ -13,6 +13,7 @@ Override by passing ``model_id`` explicitly.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Any
 
@@ -34,8 +35,11 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = (
     "You are a quantitative analyst writing concise, professional forecast summaries. "
     "You receive a draft description of a time-series forecast and rewrite it for clarity "
-    "and fluency while preserving every numerical value and factual claim exactly as stated. "
-    "Do not add interpretations, causal claims, or information not present in the draft."
+    "and fluency while preserving every numerical value and factual claim exactly as stated.\n"
+    "CRITICAL CONSTRAINTS:\n"
+    "1. Keep your rewrite strictly under 4-5 sentences. Be extremely concise.\n"
+    "2. DO NOT add interpretations, causal claims, or hallucinate relationships.\n"
+    "3. NEVER change the direction (positive/negative) or percentages of covariate impacts."
 )
 
 # ---------------------------------------------------------------------------
@@ -153,7 +157,8 @@ class LLMVerbalizer:
         if response.upper().startswith("REWRITE:"):
             response = response[len("REWRITE:"):].strip()
 
-        sentences = [s.strip() + "." for s in response.split(".") if s.strip()]
+        # Split on periods followed by space/end of string to avoid splitting decimals!
+        sentences = [s.strip() + "." for s in re.split(r'\.(?:\s+|$)', response) if s.strip()]
         grounding = {
             f"sentence_{i}": {
                 "type": "combined",
@@ -167,6 +172,8 @@ class LLMVerbalizer:
             sentences=sentences,
             grounding=grounding,
             rst_relations=list(getattr(template_result, "rst_relations", [])),
+            draft_summary=template_result.summary,
+            prompt=text,
         )
 
     def build_grounding_triples(
@@ -223,6 +230,7 @@ class LLMVerbalizer:
             + _FEW_SHOT_BLOCK
             + "\n---\n\n"
             "## Now rewrite the following\n"
+            "CONSTRAINT: Be extremely concise. Do not add any extra commentary.\n"
             f"NUMERICAL FACTS: {facts}\n"
             f"GROUNDING: {triples_str}\n\n"
             f"DRAFT: {template_result.summary}\n"

@@ -27,3 +27,5 @@ class VerbalizationResult:
     sentences: list[str]
     grounding: dict[str, Any]
     rst_relations: list[str] = field(default_factory=list)
+    draft_summary: str | None = None
+    prompt: str | None = None
