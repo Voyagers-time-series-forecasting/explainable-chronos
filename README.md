@@ -44,7 +44,7 @@ ext1
     |-- Purpose: benchmark evaluation on real datasets
     |-- Default datasets: etth1, ettm1, weather, sp500
     |-- Default mode: dev
-    |-- Default verbalizers: Template, LLM Guided, LLM Raw
+    |-- Default verbalizers: Template, LLM
     |-- Default attribution method: shap
     `-- Options: --dataset, --mode, --verbalizers, --attribution-method, --save-traces, --judge
 ```
@@ -60,7 +60,7 @@ python run_extensions.py ext1 evaluate --mode paper
 python run_extensions.py ext1 evaluate --mode dev_daily
 python run_extensions.py ext1 evaluate --mode paper_daily
 python run_extensions.py ext1 evaluate --verbalizers template
-python run_extensions.py ext1 evaluate --verbalizers template llm_guided llm_raw
+python run_extensions.py ext1 evaluate --verbalizers template llm
 python run_extensions.py ext1 evaluate --attribution-method shap
 python run_extensions.py ext1 evaluate --attribution-method attention
 ```
@@ -94,7 +94,7 @@ results/extension_1/
 | `action` | `evaluate` | required | all |
 | `--dataset` | `etth1`, `ettm1`, `weather`, `sp500` | all datasets | `evaluate` |
 | `--mode` | `dev`, `paper`, `dev_daily`, `paper_daily` | `dev` | `evaluate` |
-| `--verbalizers` | `template`, `llm_guided`, `llm_raw` | all three | `evaluate` |
+| `--verbalizers` | `template`, `llm` | both | `evaluate` |
 | `--attribution-method` | `shap`, `attention` | `shap` | `evaluate` |
 
 ## Notes

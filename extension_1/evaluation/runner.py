@@ -24,7 +24,7 @@ Usage::
     python run_extensions.py ext1 evaluate
     python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
     python run_extensions.py ext1 evaluate --dataset sp500 --mode dev_daily --verbalizers template
-    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm_guided llm_raw
+    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm
 """
 
 from __future__ import annotations
@@ -355,39 +355,23 @@ def build_pipelines(
             ),
         ))
 
-    if "llm_guided" in verbalizer_names:
+    shared_llm: Optional[LLMVerbalizer] = None
+    if "llm" in verbalizer_names:
         try:
-            lg = LLMVerbalizer(
-                template_verbalizer=TemplateVerbalizer(seed=seed),
-            )
-            pipelines.append((
-                "LLM Guided",
-                VerbalizationPipeline(
-                    forecast_provider=provider,
-                    verbalizer=lg,
-                    scorer=scorer,
-                    config=config,
-                ),
-            ))
+            shared_llm = LLMVerbalizer(template_verbalizer=TemplateVerbalizer(seed=seed))
         except Exception as e:
-            logger.warning("Could not load LLM Guided: %s", e)
+            logger.warning("Could not initialize LLMVerbalizer: %s", e)
 
-    if "llm_raw" in verbalizer_names:
-        try:
-            lr = LLMVerbalizer(
-                template_verbalizer=TemplateVerbalizer(seed=seed),
-            )
-            pipelines.append((
-                "LLM Raw",
-                VerbalizationPipeline(
-                    forecast_provider=provider,
-                    verbalizer=lr,
-                    scorer=scorer,
-                    config=config,
-                ),
-            ))
-        except Exception as e:
-            logger.warning("Could not load LLM Raw: %s", e)
+    if "llm" in verbalizer_names and shared_llm is not None:
+        pipelines.append((
+            "LLM",
+            VerbalizationPipeline(
+                forecast_provider=provider,
+                verbalizer=shared_llm,
+                scorer=scorer,
+                config=config,
+            ),
+        ))
 
     return pipelines
 
@@ -565,7 +549,7 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     datasets = sorted(df["dataset"].unique())
-    v_colors = {"Template": "#4c72b0", "LLM Guided": "#dd8452", "LLM Raw": "#55a868"}
+    v_colors = {"Template": "#4c72b0", "LLM": "#dd8452"}
 
     n_ds = len(datasets)
     x = np.arange(n_ds)
@@ -766,7 +750,7 @@ def main(
     if dataset_keys is None:
         dataset_keys = ["etth1", "ettm1", "weather", "sp500"]
     if verbalizer_names is None:
-        verbalizer_names = ["template", "llm_guided", "llm_raw"]
+        verbalizer_names = ["template", "llm"]
 
     df = run_evaluation(
         dataset_keys=dataset_keys,

@@ -16,7 +16,7 @@ Local usage::
     python run_extensions.py ext1 evaluate
     python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
     python run_extensions.py ext1 evaluate --mode dev --save-traces
-    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm_guided --judge
+    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm --judge
 """
 
 from __future__ import annotations
@@ -78,9 +78,9 @@ def main() -> None:
     parser.add_argument(
         "--verbalizers",
         nargs="+",
-        choices=["template", "llm_guided", "llm_raw"],
+        choices=["template", "llm"],
         default=None,
-        help="Verbalizers to use (default: all three)",
+        help="Verbalizers to use (default: both)",
     )
     parser.add_argument(
         "--save-traces",

@@ -56,7 +56,7 @@ The P50 forecast is rising sharply. The prediction interval is moderate and stab
 Upside potential is flagged.
 NLI Consistency: 0.812
 
-EXPLANATION B [llm_guided]:
+EXPLANATION B [llm]:
 The median forecast shows a sharp upward trajectory with a slope of +0.1842 per step. \
 The prediction interval is moderate and stable, reflecting consistent forecast confidence. \
 The P90 quantile signals meaningful upside potential, with values potentially exceeding \
