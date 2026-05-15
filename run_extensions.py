@@ -49,6 +49,59 @@ def run_ext1_evaluate(
     )
 
 
+def run_ext1_evaluate_real(
+    datasets: list | None = None,
+    mode: str = "dev",
+    verbalizers: list | None = None,
+) -> None:
+    """Run Extension 1 evaluation on real datasets."""
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
+    from extension_1.evaluation_real import main as real_main
+    real_main(dataset_keys=datasets, mode_key=mode, verbalizer_names=verbalizers)
+
+
+# ──────────────── Extension 2 ─────────────────────────────────────────
+
+def run_ext2_demo(seed: int = 42) -> None:
+    """Run Extension 2 demo — four example dialogue turns."""
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_2"))
+
+    from extension_2.dialogue import DialogueSystem
+    from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
+
+    history = generate_demo_time_series(seed=seed, length=50)
+    covariates = generate_synthetic_covariates(history, seed=seed)
+
+    system = DialogueSystem(history=history, covariates=covariates, horizon=14, seed=seed)
+
+    queries = [
+        "What if we removed the marketing spend covariate?",
+        "How confident are you in this forecast?",
+        "Show me the next 7 days instead.",
+        "What would happen if website traffic increased by 50%?",
+    ]
+
+    print("\n" + "=" * 65)
+    print("  EXTENSION 2 — DIALOGUE SYSTEM DEMO")
+    print("=" * 65)
+
+    for q in queries:
+        response = system.query(q)
+        print(response.summary())
+
+
+def run_ext2_evaluate(full_pipeline: bool = False, evaluation_set: str = "heldout") -> None:
+    """Run Extension 2 evaluation on the selected query set."""
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_2"))
+
+    from extension_2.evaluation import main as ext2_eval_main
+    ext2_eval_main(run_full_pipeline=full_pipeline, evaluation_set=evaluation_set)
+
+
+# ──────────────── CLI ─────────────────────────────────────────────────
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
