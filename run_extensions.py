@@ -15,7 +15,7 @@ Local usage::
 
     python run_extensions.py ext1 evaluate
     python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
-    python run_extensions.py ext1 evaluate --mode dev --attribution-method attention --save-traces
+    python run_extensions.py ext1 evaluate --mode dev --save-traces
     python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm_guided --judge
 """
 
@@ -34,7 +34,6 @@ def run_ext1_evaluate(
     datasets: list | None = None,
     mode: str = "dev",
     verbalizers: list | None = None,
-    attribution_method: str = "shap",
     save_traces: bool = False,
     use_judge: bool = False,
 ) -> None:
@@ -43,7 +42,6 @@ def run_ext1_evaluate(
         dataset_keys=datasets,
         mode_key=mode,
         verbalizer_names=verbalizers,
-        attribution_method=attribution_method,
         save_traces=save_traces,
         use_judge=use_judge,
     )
@@ -85,12 +83,6 @@ def main() -> None:
         help="Verbalizers to use (default: all three)",
     )
     parser.add_argument(
-        "--attribution-method",
-        choices=["shap", "attention"],
-        default="shap",
-        help="Attribution method for covariate importance (default: shap)",
-    )
-    parser.add_argument(
         "--save-traces",
         action="store_true",
         default=False,
@@ -112,7 +104,6 @@ def main() -> None:
             datasets=args.dataset,
             mode=args.mode,
             verbalizers=args.verbalizers,
-            attribution_method=args.attribution_method,
             save_traces=args.save_traces,
             use_judge=args.judge,
         ),

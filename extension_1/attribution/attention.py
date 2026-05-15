@@ -90,7 +90,6 @@ class AttentionAttributor:
 
         return AttributionResult(
             attributions=attributions,
-            surrogate_r2=float("nan"),  # not applicable for attention-based method
             top_k=self.top_k,
         )
 

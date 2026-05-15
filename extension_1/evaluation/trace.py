@@ -166,12 +166,7 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     ax.set_xlabel("Relative impact (%)", fontsize=8)
     ax.tick_params(labelsize=8)
 
-    method_label = "SHAP" if not (
-        result.attention_weights and result.attribution
-    ) else "Attention Rollout"
-    r2 = result.attribution.surrogate_r2
-    r2_str = f"R²={r2:.3f}" if r2 == r2 else "R²=N/A"  # nan check
-    ax.set_title(f"Attribution ({method_label}, {r2_str})", fontsize=10, fontweight="bold")
+    ax.set_title("Attribution (Attention Rollout)", fontsize=10, fontweight="bold")
 
     from matplotlib.patches import Patch
     legend_elements = [
@@ -225,7 +220,6 @@ def render_trace(
     actuals: Optional[np.ndarray],
     dataset_name: str,
     window_idx: int,
-    attribution_method: str,
     verbalizer_type: str,
     output_dir: Path,
     covariates: Optional[CovariateSet] = None,
@@ -241,10 +235,8 @@ def render_trace(
         Ground-truth values for the forecast horizon.
     dataset_name : str
     window_idx : int
-    attribution_method : str
-        "shap" or "attention" — used in the filename.
     verbalizer_type : str
-        "template" or "llm_guided" — used in the filename.
+        Used in the filename.
     output_dir : Path
         Directory where the PNG will be saved.
     covariates : CovariateSet, optional
@@ -259,8 +251,7 @@ def render_trace(
 
     fig = plt.figure(figsize=(16, 11), constrained_layout=True)
     fig.suptitle(
-        f"Trace — {dataset_name}  window {window_idx:02d}  "
-        f"[{attribution_method} + {verbalizer_type}]",
+        f"Trace — {dataset_name}  window {window_idx:02d}  [{verbalizer_type}]",
         fontsize=11, fontweight="bold",
     )
 
@@ -282,7 +273,7 @@ def render_trace(
     _plot_attribution(ax_attribution, result)
     _plot_nli(ax_nli, result)
 
-    fname = f"{dataset_name}_w{window_idx:02d}_{attribution_method}_{verbalizer_type}.png"
+    fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.png"
     out_path = output_dir / fname
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

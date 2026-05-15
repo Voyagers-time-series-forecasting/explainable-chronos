@@ -11,7 +11,8 @@ import pandas as pd
 
 from extension_1.config import PipelineConfig
 from extension_1.evaluation.scoring import ConsistencyReport, NLIConsistencyScorer
-from extension_1.attribution.base import AttributionResult, CovariateSet, create_attributor
+from extension_1.attribution.attention import AttentionAttributor
+from extension_1.attribution.types import AttributionResult, CovariateSet
 from extension_1.features.extractor import ForecastFeatures, extract_features
 from extension_1.verbalization.template import TemplateVerbalizer, VerbalizationResult
 from extension_1.verbalization.llm import LLMVerbalizer
@@ -111,19 +112,12 @@ class VerbalizationPipeline:
             features.uncertainty_level, features.uncertainty_trend,
         )
 
-        # Stage B — Covariate attribution
-        attribution = create_attributor(
-            method=self.config.attribution_method,
-            covariates=covariates,
-            forecast=np.asarray(forecast["p50"]),
-            attention_weights=attention_weights,
-            random_state=self.config.seed,
-            top_k=self.config.shap_top_k,
-        )
+        # Stage B — Covariate attribution (attention rollout)
+        attribution = AttentionAttributor(
+            top_k=self.config.attribution_top_k,
+        ).explain(covariates, attention_weights=attention_weights)
         logger.info(
-            "Attribution (%s): R²=%.4f, top=%s (%.1f%%)",
-            self.config.attribution_method.upper(),
-            attribution.surrogate_r2,
+            "Attribution: top=%s (%.1f%%)",
             attribution.attributions[0].name if attribution.attributions else "?",
             attribution.attributions[0].relative_impact_pct if attribution.attributions else 0,
         )

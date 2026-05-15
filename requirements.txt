@@ -22,9 +22,6 @@ accelerate>=0.30
 # Chronos-2 backbone
 chronos-forecasting>=2.0
 
-# Covariate attribution
-shap==0.44.0
-xgboost==2.0.3
 
 # Dataset utilities
 yfinance>=0.2.0

@@ -330,11 +330,9 @@ def build_pipelines(
     verbalizer_names: List[str],
     seed: int,
     config: PipelineConfig,
-    attribution_method: str = "shap",
 ) -> List[Tuple[str, VerbalizationPipeline]]:
     """Build the requested verbalization pipelines."""
-    enable_attention = attribution_method == "attention"
-    provider = ChronosForecastProvider(enable_attention=enable_attention)
+    provider = ChronosForecastProvider(enable_attention=True)
     scorer = NLIConsistencyScorer()
     pipelines: List[Tuple[str, VerbalizationPipeline]] = []
 
@@ -404,7 +402,6 @@ def run_evaluation(
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
     seed: int = RANDOM_SEED,
-    attribution_method: str = "shap",
     save_traces: bool = False,
     use_judge: bool = False,
 ) -> pd.DataFrame:
@@ -413,8 +410,8 @@ def run_evaluation(
         verbalizer_names = ["template"]
 
     mode = EVAL_MODES[mode_key]
-    config = PipelineConfig(seed=seed, attribution_method=attribution_method)
-    pipelines = build_pipelines(verbalizer_names, seed, config, attribution_method=attribution_method)
+    config = PipelineConfig(seed=seed)
+    pipelines = build_pipelines(verbalizer_names, seed, config)
 
     logger.info(
         "Real evaluation | mode=%s | datasets=%s | verbalizers=%s",
@@ -490,14 +487,11 @@ def run_evaluation(
                     "rst_relations": ",".join(result.verbalization.rst_relations),
                 }
 
-                if result.attribution:
-                    record["surrogate_r2"] = result.attribution.surrogate_r2
-                    if result.attribution.attributions:
-                        top = result.attribution.attributions[0]
-                        record["top_covariate"] = top.name
-                        record["top_covariate_impact_pct"] = top.relative_impact_pct
+                if result.attribution.attributions:
+                    top = result.attribution.attributions[0]
+                    record["top_covariate"] = top.name
+                    record["top_covariate_impact_pct"] = top.relative_impact_pct
                 else:
-                    record["surrogate_r2"] = None
                     record["top_covariate"] = None
                     record["top_covariate_impact_pct"] = None
 
@@ -520,7 +514,6 @@ def run_evaluation(
                             actuals=future,
                             dataset_name=spec.name,
                             window_idx=w_idx,
-                            attribution_method=attribution_method,
                             verbalizer_type=v_type,
                             output_dir=traces_dir,
                             covariates=cov_set,
@@ -687,18 +680,15 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
     lines.append("")
 
-    if "surrogate_r2" in df.columns and df["surrogate_r2"].notna().any():
-        lines.append("## 4. Covariate Attribution")
+    if "top_covariate" in df.columns and df["top_covariate"].notna().any():
+        lines.append("## 4. Covariate Attribution (Attention Rollout)")
         lines.append("")
-        cov_df = df[df["surrogate_r2"].notna()]
-        lines.append(f"- Mean surrogate R²: {cov_df['surrogate_r2'].mean():.4f}")
-        if "top_covariate" in cov_df.columns:
-            top_counts = cov_df["top_covariate"].value_counts().head(5)
-            lines.append(
-                "- Top covariates: " + ", ".join(
-                    f"{v} ({c})" for v, c in top_counts.items()
-                )
+        top_counts = df["top_covariate"].value_counts().head(5)
+        lines.append(
+            "- Top covariates: " + ", ".join(
+                f"{v} ({c})" for v, c in top_counts.items()
             )
+        )
         lines.append("")
 
     judge_path = save_dir / "judge_results.csv"
@@ -756,7 +746,6 @@ def main(
     dataset_keys: Optional[List[str]] = None,
     mode_key: str = "dev",
     verbalizer_names: Optional[List[str]] = None,
-    attribution_method: str = "shap",
     save_traces: bool = False,
     use_judge: bool = False,
 ) -> None:
@@ -773,7 +762,6 @@ def main(
         dataset_keys=dataset_keys,
         mode_key=mode_key,
         verbalizer_names=verbalizer_names,
-        attribution_method=attribution_method,
         save_traces=save_traces,
         use_judge=use_judge,
     )

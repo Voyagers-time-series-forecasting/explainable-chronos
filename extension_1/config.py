@@ -50,9 +50,8 @@ CONSISTENCY_THRESHOLD: float = 0.70
 NLI_NEUTRAL_WEIGHT: float = 0.60
 NLI_CONTRADICTION_WEIGHT: float = 0.40
 
-# ────────────────────── SHAP / surrogate ──────────────────────────────
-SHAP_TOP_K: int = 5
-SURROGATE_N_ESTIMATORS: int = 100
+# ────────────────────── attribution ───────────────────────────────────
+ATTRIBUTION_TOP_K: int = 5
 
 # ─────────────────────── LLM model selection ──────────────────────────
 # CPU-only (Colab free tier, local dev): compact 1.8B model
@@ -94,5 +93,4 @@ class PipelineConfig:
     critical_thresholds: dict[str, float] = field(default_factory=dict)
     nli_model: str = NLI_MODEL_NAME
     consistency_threshold: float = CONSISTENCY_THRESHOLD
-    shap_top_k: int = SHAP_TOP_K
-    attribution_method: str = "shap"
+    attribution_top_k: int = ATTRIBUTION_TOP_K

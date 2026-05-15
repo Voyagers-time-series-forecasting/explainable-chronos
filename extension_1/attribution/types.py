@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from extension_1.config import SHAP_TOP_K
-
 
 @dataclass
 class CovariateSet:
@@ -49,8 +47,7 @@ class CovariateAttribution:
 
 @dataclass
 class AttributionResult:
-    """Aggregated attributions from any backend."""
+    """Aggregated attributions from the attention rollout backend."""
 
     attributions: list[CovariateAttribution]
-    surrogate_r2: float
-    top_k: int = SHAP_TOP_K
+    top_k: int = 5
