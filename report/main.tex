@@ -187,6 +187,7 @@ Evaluated against observed actuals, independently of the verbalization pipeline.
 
 \begin{itemize}
   \item \textbf{MASE}: ratio of P50 MAE to a na\"ive one-step baseline (history differences);
+  \item \textbf{Fair MASE}: ratio of P50 MAE to a multi-step naive baseline that repeats the last observed value over the full horizon.
   \item \textbf{Coverage}: fraction of actuals falling inside the P10--P90 interval;
 \end{itemize}
 
@@ -330,23 +331,23 @@ Qwen Team,
 \appendix
 % =====================================================================
 
-\section{Illustrative Success and Failure Cases}
+\textbf{Extension 1: Illustrative Success and Failure Cases}
 
-The following cases provide concrete intuition for the NLI scoring metric using examples from preliminary experiments on synthetic data.
+\textbf{Success case}
+The extracted features indicate a flat trend ($+0.0415$ per step), high and widening uncertainty, both downside and upside risk, and a statistically significant regime shift ($p < 10^{-5}$). The dominant covariate is \texttt{temp\_min} at 39.0\%, followed by \texttt{precipitation} (30.8\%) and \texttt{wind} (30.2\%).
+The LLM produces:
+\begin{quote}
+\emph{``The forecast suggests stability over the next 96 periods, starting from 22.20 and ending near 27.34, which is 23.2\% higher. Prediction intervals are wide and expanding, indicating increasing uncertainty. There is both downside and upside risk, with bounds up to 20\% above or below current levels. A structural break is detected mid-horizon, driven mainly by temperature (39.0\%), followed by precipitation (30.8\%) and wind (30.2\%).''}
+\end{quote}
+Every numerical claim and directional fact maps directly to a feature in the grounding, and the summary passes the NLI consistency check ($\geq 0.70$).
 
-\textbf{Success case (Template verbalizer, trending scenario).}
-The template generates: \emph{``The forecast indicates that values are expected to remain relatively stable over the next 7 periods.''}
-The NLI premise reads: \emph{``The median forecast slope is +0.0825 per period. The normalised slope is +0.0010. The trend is classified as slightly flat.''}
-The NLI model assigns an entailment probability of~0.999, because the sentence's ``relatively stable'' directly mirrors the ``slightly flat'' classification.
-
-\textbf{Failure case (LLM verbalizer, flat scenario).}
-The LLM generates: \emph{``The financial performance has been consistent but not exceptionally strong or weak, indicating potential risks associated with current market conditions.''}
-The NLI premise contains only slope values and classification labels---no mention of ``financial performance'' or ``market conditions.''
-The NLI model assigns an entailment probability of~0.14, correctly flagging the hallucinated domain-specific content.
-
-\textbf{Failure case (Template verbalizer, regime-shift premise).}
-The template generates: \emph{``Additionally, a structural break is detected near the midpoint, indicating a potential change in the underlying pattern (p=0.0131).''}
-The NLI premise reads: \emph{``A Welch t-test comparing the first and second halves yields a p-value of 0.0131, indicating a statistically significant mean shift.''}
-The entailment probability drops to~0.011 because the NLI model struggles to link ``structural break'' with ``statistically significant mean shift''---a known lexical sensitivity of NLI models.
+\textbf{Failure case}
+Suppose the LLM had instead produced:
+\begin{quote}
+\emph{``The forecast indicates a declining trend over the 96-period horizon, likely driven by adverse seasonal weather patterns and temperature inversions. Long-term conditions appear to be deteriorating, suggesting the structural shift observed at the midpoint may persist well beyond the forecast window.''}
+\end{quote}
+The NLI premise for the first sentence contains only the flat trend classification and a slope of $+0.0415$ --- no mention of ``declining,'' ``seasonal patterns,'' or ``temperature inversions.''
+The NLI model assigns an entailment probability near~0.05, correctly flagging the direction reversal (flat vs.\ declining) and the hallucinated domain-specific causal content.
+This illustrates the key failure mode of the LLM verbalizer: despite the grounding constraints in the prompt, the model can introduce plausible-sounding but factually unsupported language that the NLI metric reliably catches.
 
 \end{document}
