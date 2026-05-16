@@ -77,24 +77,11 @@ class DiscoursePlanner:
                         "nucleus": f"the forecast trend is {features.trend_direction}",
                         "satellite": (
                             f"primarily driven by {top.name} "
-                            f"({top.direction} impact, {top.relative_impact_pct:.1f}% contribution)"
+                            f"({top.relative_impact_pct:.1f}% contribution)"
                         ),
                     },
                 ))
 
-            if len(attribution.attributions) >= 2:
-                a, b = attribution.attributions[0], attribution.attributions[1]
-                if a.direction != b.direction and b.relative_impact_pct > 15:
-                    relations.append((
-                        RSTRelation.CONTRAST,
-                        {
-                            "nucleus": f"{a.name} has a {a.direction} effect ({a.relative_impact_pct:.1f}%)",
-                            "satellite": (
-                                f"{b.name} pushes in the {b.direction} direction "
-                                f"({b.relative_impact_pct:.1f}%)"
-                            ),
-                        },
-                    ))
 
         return relations
 
@@ -297,7 +284,7 @@ class TemplateVerbalizer:
         if attribution and attribution.attributions:
             for attr in attribution.attributions[: attribution.top_k]:
                 sentences.append(
-                    f"{attr.name.replace('_', ' ').title()} has a {attr.direction} effect "
+                    f"{attr.name.replace('_', ' ').title()} has a positive effect "
                     f"on the forecast, contributing {attr.relative_impact_pct:.1f}% of the "
                     f"total attribution."
                 )
@@ -305,7 +292,6 @@ class TemplateVerbalizer:
                     "type": "attribution",
                     "covariate_name": attr.name,
                     "importance_score": attr.importance_score,
-                    "direction": attr.direction,
                     "relative_impact_pct": attr.relative_impact_pct,
                 }
 

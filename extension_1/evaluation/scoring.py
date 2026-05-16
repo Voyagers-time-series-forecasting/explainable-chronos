@@ -121,13 +121,11 @@ def render_premise(grounding: Dict[str, Any]) -> str:
 
     if gtype == "attribution":
         name = grounding.get("covariate_name", "unknown")
-        direction = grounding.get("direction", "unknown")
         impact = grounding.get("relative_impact_pct", 0)
         importance_score = grounding.get("importance_score", 0)
         return (
-            f"The covariate '{name}' has a {direction} effect on the forecast. "
-            f"Its attribution importance score is {importance_score:.4f}, contributing "
-            f"{impact:.1f}% of the total forecast attribution."
+            f"The covariate '{name}' contributes {impact:.1f}% to the total forecast attribution "
+            f"(importance score: {importance_score:.4f})."
         )
 
     if gtype == "trajectory":

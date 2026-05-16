@@ -45,7 +45,7 @@ import yfinance as yf
 from extension_1.config import PipelineConfig, RANDOM_SEED
 from extension_1.evaluation.scoring import NLIConsistencyScorer
 from extension_1.evaluation.factuality import compute_fact_recall, compute_feature_completeness
-from extension_1.attribution.base import CovariateSet
+from extension_1.attribution.types import CovariateSet
 from extension_1.evaluation.judge import LLMJudge
 from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.evaluation.trace import render_trace
@@ -508,7 +508,6 @@ def run_evaluation(
                             verbalizer_type=v_type,
                             output_dir=traces_dir,
                             covariates=cov_set,
-                            future_covariates=future_cov_set,
                         )
                     except Exception as te:
                         logger.warning("Trace rendering failed [%s/%s]: %s", spec.name, v_type, te)

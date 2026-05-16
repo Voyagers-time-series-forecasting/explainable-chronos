@@ -41,7 +41,6 @@ class CovariateAttribution:
 
     name: str
     importance_score: float
-    direction: str
     relative_impact_pct: float
 
 

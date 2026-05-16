@@ -198,7 +198,7 @@ class LLMJudge:
         attr_line = ""
         if result_a.attribution and result_a.attribution.attributions:
             top = result_a.attribution.attributions[0]
-            attr_line = f"\n- Top covariate: {top.name} ({top.direction}, {top.relative_impact_pct:.1f}% contribution)"
+            attr_line = f"\n- Top covariate: {top.name} ({top.relative_impact_pct:.1f}% contribution)"
 
         facts = (
             f"- Trend: {f.trend_direction} ({f.trend_magnitude}), slope={f.trend_slope:+.4f}\n"

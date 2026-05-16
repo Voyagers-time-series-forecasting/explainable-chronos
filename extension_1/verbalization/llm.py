@@ -196,7 +196,7 @@ class LLMVerbalizer:
         ]
         if attribution:
             for attr in attribution.attributions[: attribution.top_k]:
-                verb = "increases" if attr.direction == "positive" else "decreases"
+                verb = "increases"
                 triples.append((
                     f"{attr.name}_covariate",
                     f"{verb}_forecast_by",
