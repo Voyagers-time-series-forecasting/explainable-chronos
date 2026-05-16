@@ -98,10 +98,9 @@ A verbalization result comprising:
 
 \subsection{Extension 1}
 
-The pipeline consists of four sequential stages: forecast and feature extraction (Stage A), covariate attribution (Stage B), verbalization (Stage C), and NLI consistency scoring (Stage D).
+The pipeline consists of four sequential stages: forecast and feature extraction (1), covariate attribution (2), verbalization (3), and NLI consistency scoring (4).
 
-
-\subsubsection*{Stage A: Forecast and Feature Extraction}
+\subsubsection{Forecast and Feature Extraction}
 
 From the Chronos-2 quantile output (P10, P50, P90) we derive seven interpretable feature groups using NumPy and SciPy:
 
@@ -119,7 +118,7 @@ From the Chronos-2 quantile output (P10, P50, P90) we derive seven interpretable
 
 
 % ----- 4.2 -----
-\subsubsection*{Stage B: Covariate Attribution}
+\subsubsection{Covariate Attribution}
 
 The pipeline computes covariate attribution scores via Attention Rollout~\cite{abnar2020attentionflow} and passes the top-$k$ results (default $k=5$) to the verbalizer.
 
@@ -137,7 +136,7 @@ The result is a per-covariate saliency curve, from which we extract the peak ste
 
 
 % ----- 4.3 -----
-\subsubsection*{Stage C: Verbalization}
+\subsubsection{Verbalization}
 
 We implement two complementary approaches.
 
@@ -156,7 +155,7 @@ Because the LLM may freely reorganize content across sentences, each output sent
 
 
 % ----- 4.4 -----
-\subsubsection*{Stage D: NLI Consistency Scoring}
+\subsubsection{NLI Consistency Scoring}
 
 For each sentence $s_k$ in the verbalization, a \emph{premise} $\pi_k$ is rendered from its grounding dictionary. A NLI model is used to estimate:
 %
@@ -192,23 +191,23 @@ Evaluated against observed actuals, independently of the verbalization pipeline.
 \end{itemize}
 
 % ----- 5.2 -----
-\subsubsection{ Verbalization Quality}
+\subsubsection{Verbalization Quality}
 
 Evaluated against the model's own numerical output, not against actuals.
 Metrics are organised along three axes:
 
-\textit{Faithfulness: Does the text accurately describe the forecast?}
+\textit{a) Faithfulness: Does the text accurately describe the forecast?}
 \begin{itemize}
   \item \textbf{Per-sentence NLI score}: entailment probability from the NLI model; the mean over all sentences defines the overall consistency score ($\geq 0.70$ = pass).
   \item \textbf{Fact recall}: fraction of key numerical values (horizon, attribution percentages, trajectory change). 
 \end{itemize}
 
-\textit{Usefulness: Would a human prefer this?}
+\textit{b) Usefulness: Would a human prefer this?}
 \begin{itemize}
   \item \textbf{LLM-as-a-Judge}: a local LLM performs all $\binom{V}{2}$ pairwise comparisons per scenario, assigning human-preference scores in $[1,5]$ and declaring a winner or tie ($|\Delta| \leq 1$).
 \end{itemize}
 
-\textit{Completeness: Are all key features mentioned?}
+\textit{c) Completeness: Are all key features mentioned?}
 \begin{itemize}
   \item \textbf{Feature completeness}: fraction of expected feature categories (trend, uncertainty, attribution, risk, regime shift) covered by at least one keyword in the text.
 \end{itemize}
@@ -239,12 +238,43 @@ The evaluation protocol from Section~V is applied: forecast accuracy metrics (MA
 We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps and a forecast horizon of 96 steps. Windows are positioned at evenly spaced starting points within the test split.
 
 \textbf{Comparisons.}
-Two verbalizer types (Template, LLM) are compared across all 200 scenarios per dataset.
+The two verbalizer types (Template, LLM) are compared across all 200 scenarios per dataset.
 
 % ----- 6.3 -----
 \subsubsection{Results}
 
-\emph{Results will be reported after completion of the experiments.}
+\paragraph*{a) Forecast Accuracy}
+Over 200 evaluation windows, Chronos-2-small achieves a mean MASE of $0.998 \pm 0.184$ and a Fair MASE of $0.425 \pm 0.167$, indicating that the median forecast substantially outperforms a flat naive baseline over the 96-step horizon despite being close to the one-step naive on MASE. The P10--P90 interval achieves $91.4\% \pm 4.6\%$  coverage.
+
+\paragraph*{b) Verbalization Quality}
+
+\textit{Faithfulness.}
+Both verbalizers achieve high NLI consistency (Template: $0.884 \pm 0.026$; LLM: $0.877 \pm 0.070$), with pass rates of 100\% and 99\% respectively.
+Fact recall is 1.000 for both verbalizers across all windows.
+Table~\ref{tab:verbalization} reports the full breakdown.
+
+\begin{table}[h]
+\centering
+\caption{Verbalization quality on 200 Weather windows (mean $\pm$ std).}
+\label{tab:verbalization}
+\begin{tabular}{lccc}
+\toprule
+Verbalizer & NLI Consistency & Fact Recall & Feat.\ Completeness \\
+\midrule
+Template & $0.884 \pm 0.026$ & $1.000$ & $1.000$ \\
+LLM      & $0.877 \pm 0.070$ & $1.000$ & $0.932 \pm 0.102$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textit{Usefulness.}
+The judge strongly prefers the LLM verbalizer: it wins in 199 of 200 pairwise comparisons (mean preference score $4.95/5$ vs.\ $2.44/5$ for the Template).
+We note, however, that this setup is effectively a toy example: the same LLM that produced the LLM verbalizer output also serves as judge, introducing a strong self-preference bias. 
+
+
+\textit{Completeness.}
+The Template verbalizer reaches perfect feature completeness (1.000) by construction, while the LLM scores $0.932 \pm 0.102$, with occasional omissions of feature categories.
+Across all 200 windows, \texttt{temp\_min} is ranked as the top covariate in 199 cases ($38.2\% \pm 1.8\%$ mean relative impact), confirming its dominant influence on the \texttt{temp\_max} forecast.
 
 
 % =====================================================================
