@@ -31,14 +31,17 @@ CONFIDENCE_PATTERNS = PatternSet(
         r"\bprediction\s+intervals?\b",
         r"\bp10\b",
         r"\bp90\b",
-        r"\brange\b.{0,20}\bforecast\b",
-        r"\bforecast\b.{0,20}\brange\b",
+        r"\brange\b.{0,40}\bforecast\b",
+        r"\bforecast\b.{0,40}\brange\b",
+        r"\bwhat\s+range\b",
         r"\bmargin\s+of\s+error\b",
         r"\bupside\b",
         r"\bdownside\b",
         r"\bbest\s+case\b",
         r"\bworst\s+case\b",
         r"\binterval\s+width\b",
+        r"\breliable\b",
+        r"\btrust(?:worthy)?\b",
     ),
 )
 
@@ -54,7 +57,8 @@ REMOVE_COVARIATE_PATTERNS = PatternSet(
         r"\bzero(?:\s+out)?\b",
         r"\bif\b.{0,30}\bweren'?t\b",
         r"\bif\b.{0,30}\bdidn'?t\s+have\b",
-        r"\bwhat\s+if\b.{0,30}\bgone\b",
+        r"\bwhat\s+if\b.{0,50}\bgone\b",
+        r"\bwere\s+gone\b",
         r"\bwhat\s+if\b.{0,30}\bno\b",
         r"\bif\b.{0,30}\bno\b.{0,20}\bdata\b",
         r"\bdidn'?t\s+affect\b",
@@ -94,6 +98,12 @@ HORIZON_PATTERNS = (
     r"\b(\d+)\s*(?:day|week|month|hour|period|step)s?\s+prediction\b",
     r"\bneed\s+a\s+(\d+)[\s-](?:day|week|month|hour|period|step)\b",
 )
+
+HORIZON_WORD_NUMBERS: Dict[str, int] = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30,
+}
 
 HORIZON_UNITS: Dict[str, int] = {
     "hour": 1,

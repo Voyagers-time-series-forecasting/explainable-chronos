@@ -10,6 +10,7 @@ from extension_2.intent_patterns import (
     FACTOR_WORDS,
     HORIZON_PATTERNS,
     HORIZON_UNITS,
+    HORIZON_WORD_NUMBERS,
     INCREASE_MARKERS,
 )
 
@@ -73,12 +74,31 @@ def extract_scale_factor(query: str) -> Optional[float]:
     return None
 
 
+_WORD_NUM_UNIT = re.compile(
+    r"\b("
+    + "|".join(HORIZON_WORD_NUMBERS)
+    + r")[\s-]+(hour|day|week|month|period|step)s?\b",
+    re.IGNORECASE,
+)
+
+
 def extract_horizon(
     query: str,
     horizon_patterns: Iterable[str] = HORIZON_PATTERNS,
 ) -> Optional[int]:
-    """Extract a forecast horizon in steps."""
+    """Extract a forecast horizon in steps.
+
+    Handles both digit-based ("7 days") and word-based ("one-month") phrasing.
+    """
     q = query.lower()
+
+    # Word-number phrasing: "one-month", "two weeks", etc.
+    wn_match = _WORD_NUM_UNIT.search(q)
+    if wn_match:
+        n = HORIZON_WORD_NUMBERS[wn_match.group(1).lower()]
+        unit = wn_match.group(2).lower()
+        return n * HORIZON_UNITS.get(unit, 1)
+
     for pattern in horizon_patterns:
         match = re.search(pattern, q, re.IGNORECASE)
         if not match:

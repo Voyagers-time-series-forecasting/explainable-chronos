@@ -4,19 +4,19 @@ Central runner for all Explainable-Chronos extensions.
 Colab quick-start::
 
     !git clone <repo-url> && cd explainable-chronos
-    !pip install -e .                        # installs all deps from pyproject.toml
-    # GPU users: also run the line below for CUDA-enabled PyTorch
-    # !pip install torch --index-url https://download.pytorch.org/whl/cu121
+    !pip install -e .
     !python run_extensions.py ext1 evaluate --mode dev
-    # Or via the installed entry point:
-    !explainable-chronos ext1 evaluate --mode dev
 
 Local usage::
 
     python run_extensions.py ext1 evaluate
     python run_extensions.py ext1 evaluate --dataset etth1 --mode dev --verbalizers template
     python run_extensions.py ext1 evaluate --mode dev --save-traces
-    python run_extensions.py ext1 evaluate --mode paper --verbalizers template llm --judge
+    python run_extensions.py ext1 evaluate --verbalizers template llm --judge
+
+    python run_extensions.py ext2 evaluate            # intent-only (fast)
+    python run_extensions.py ext2 evaluate-full       # full pipeline with Chronos-2 + NLI
+    python run_extensions.py ext2 evaluate --eval-set dev
 """
 
 from __future__ import annotations
@@ -49,47 +49,8 @@ def run_ext1_evaluate(
     )
 
 
-def run_ext1_evaluate_real(
-    datasets: list | None = None,
-    mode: str = "dev",
-    verbalizers: list | None = None,
-) -> None:
-    """Run Extension 1 evaluation on real datasets."""
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
-    from extension_1.evaluation_real import main as real_main
-    real_main(dataset_keys=datasets, mode_key=mode, verbalizer_names=verbalizers)
-
 
 # ──────────────── Extension 2 ─────────────────────────────────────────
-
-def run_ext2_demo(seed: int = 42) -> None:
-    """Run Extension 2 demo — four example dialogue turns."""
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_1"))
-    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent / "extension_2"))
-
-    from extension_2.dialogue import DialogueSystem
-    from shared.data_generators import generate_demo_time_series, generate_synthetic_covariates
-
-    history = generate_demo_time_series(seed=seed, length=50)
-    covariates = generate_synthetic_covariates(history, seed=seed)
-
-    system = DialogueSystem(history=history, covariates=covariates, horizon=14, seed=seed)
-
-    queries = [
-        "What if we removed the marketing spend covariate?",
-        "How confident are you in this forecast?",
-        "Show me the next 7 days instead.",
-        "What would happen if website traffic increased by 50%?",
-    ]
-
-    print("\n" + "=" * 65)
-    print("  EXTENSION 2 — DIALOGUE SYSTEM DEMO")
-    print("=" * 65)
-
-    for q in queries:
-        response = system.query(q)
-        print(response.summary())
-
 
 def run_ext2_evaluate(full_pipeline: bool = False, evaluation_set: str = "heldout") -> None:
     """Run Extension 2 evaluation on the selected query set."""
@@ -109,13 +70,17 @@ def main() -> None:
     )
     parser.add_argument(
         "extension",
-        choices=["ext1"],
+        choices=["ext1", "ext2"],
         help="Which extension to run",
     )
     parser.add_argument(
         "action",
-        choices=["evaluate"],
-        help="Action to perform",
+        choices=["evaluate", "evaluate-full"],
+        help=(
+            "Action to perform. "
+            "ext1: evaluate (full benchmark). "
+            "ext2: evaluate (intent-only, fast) | evaluate-full (Chronos-2 + NLI)."
+        ),
     )
     parser.add_argument(
         "--dataset",
@@ -154,6 +119,17 @@ def main() -> None:
         default=None,
         help="Directory to save evaluation results (default: extension_1/results/extension_1)",
     )
+    parser.add_argument(
+        "--eval-set",
+        choices=["dev", "test", "heldout", "blind"],
+        default="test",
+        help=(
+            "Query set for ext2 evaluate. "
+            "'test': 30-query set (patterns were tuned on it). "
+            "'blind': 10-query set, patterns frozen — final reported score. "
+            "'dev': 40-query development set."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -168,9 +144,23 @@ def main() -> None:
             use_judge=args.judge,
             output_dir=args.output_dir,
         ),
+        ("ext2", "evaluate"): lambda: run_ext2_evaluate(
+            full_pipeline=False,
+            evaluation_set=args.eval_set,
+        ),
+        ("ext2", "evaluate-full"): lambda: run_ext2_evaluate(
+            full_pipeline=True,
+            evaluation_set=args.eval_set,
+        ),
     }
 
-    dispatch[(args.extension, args.action)]()
+    key = (args.extension, args.action)
+    if key not in dispatch:
+        parser.error(
+            f"Action '{args.action}' is not valid for '{args.extension}'. "
+            f"Valid combinations: {[f'{e} {a}' for e, a in dispatch]}"
+        )
+    dispatch[key]()
 
 
 if __name__ == "__main__":

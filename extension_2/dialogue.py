@@ -28,17 +28,17 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# Add extension_1 to path so we can import from it
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "extension_1"))
+# Ensure repo root is in path so extension_1.* imports resolve correctly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from covariate_attribution import CovariateSet
-from pipeline import PipelineResult, VerbalizationPipeline
-from shared.forecast_provider import ChronosForecastProvider
+from extension_1.attribution.types import CovariateSet
+from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.config import PipelineConfig
-from extension_1.consistency_scorer import NLIConsistencyScorer
-from extension_1.verbalizer import TemplateVerbalizer
+from extension_1.evaluation.scoring import NLIConsistencyScorer
+from extension_1.verbalization.template import TemplateVerbalizer
 from extension_2.intent_parser import IntentParser, ParsedIntent
 from extension_2.input_modifier import InputModifier, ModificationResult
+from shared.forecast_provider import ChronosForecastProvider
 
 logger = logging.getLogger(__name__)
 
@@ -189,13 +189,18 @@ class DialogueSystem:
             )
         return self._original_result
 
-    def query(self, user_query: str) -> DialogueResponse:
+    def query(self, user_query: str, *, dry_run: bool = False) -> DialogueResponse:
         """Process a natural language query and return a response.
 
         Parameters
         ----------
         user_query : str
             Raw user input string.
+        dry_run : bool
+            If True, parse the intent and apply the modification to update
+            internal state, but skip Chronos-2 and verbalization. Useful
+            for evaluation of parser and state-management logic without
+            the cost of model inference.
 
         Returns
         -------
@@ -204,24 +209,46 @@ class DialogueSystem:
         """
         logger.info("Processing query: %s", user_query)
 
-        # Ensure original forecast exists
-        original = self._get_original_forecast()
-        original_forecast = original.forecast
-
-        # Parse intent
+        # Parse intent (always — dry_run still needs this)
         intent = self._parser.parse(user_query)
         logger.info("Intent: %s (confidence=%s)", intent.intent_type, intent.confidence)
 
-        # Handle confidence_query directly without re-running
+        # Apply modification to compute new state
+        modification = self._modifier.apply(intent, self.covariates, self.horizon)
+
+        if dry_run:
+            # Persist state without running Chronos-2
+            if modification.modified:
+                self.covariates = modification.covariates
+                self.horizon = modification.horizon
+            response = DialogueResponse(
+                query=user_query,
+                intent=intent,
+                modification=modification,
+                answer="[dry run]",
+                consistency_score=0.0,
+                is_consistent=False,
+                delta_p50=None,
+                original_forecast=None,
+                modified_forecast=None,
+                task_completed=modification.modified and intent.is_actionable(),
+            )
+            self._turn_history.append(response)
+            return response
+
+        # Full path — ensure original forecast exists
+        original = self._get_original_forecast()
+        original_forecast = original.forecast
+
+        # Handle query-only intents that don't require re-running the model
         if intent.intent_type == "confidence_query":
             return self._handle_confidence_query(
                 user_query, intent, original, original_forecast
             )
-
-        # Apply modification
-        modification = self._modifier.apply(
-            intent, self.covariates, self.horizon
-        )
+        if intent.intent_type == "counterfactual":
+            return self._handle_counterfactual(
+                user_query, intent, original, original_forecast
+            )
 
         # Re-run Chronos-2 with modified inputs if anything changed
         if modification.modified:
@@ -243,6 +270,10 @@ class DialogueSystem:
             consistency_score = modified_result.consistency_report.overall_score
             is_consistent = modified_result.consistency_report.is_consistent
             task_completed = intent.is_actionable()
+
+            # Persist updated inputs so subsequent turns build on this state
+            self.covariates = modification.covariates
+            self.horizon = modification.horizon
 
         else:
             # No modification — use original result
@@ -303,6 +334,62 @@ class DialogueSystem:
             covariates=self.covariates,
             horizon=self.horizon,
             description="Confidence query — no modification applied.",
+            modified=False,
+        )
+
+        response = DialogueResponse(
+            query=user_query,
+            intent=intent,
+            modification=modification,
+            answer=answer,
+            consistency_score=original.consistency_report.overall_score,
+            is_consistent=original.consistency_report.is_consistent,
+            delta_p50=None,
+            original_forecast=original_forecast,
+            modified_forecast=original_forecast,
+            task_completed=True,
+        )
+
+        self._turn_history.append(response)
+        return response
+
+    def _handle_counterfactual(
+        self,
+        user_query: str,
+        intent: ParsedIntent,
+        original: PipelineResult,
+        original_forecast: Dict[str, Any],
+    ) -> DialogueResponse:
+        """Handle a counterfactual query about historical inputs.
+
+        The system only modifies future forecast inputs; it cannot alter
+        historical data retroactively. This handler explains the limitation
+        and points the user toward what the system can do instead.
+        """
+        cov = intent.target_covariate
+        if cov:
+            suggestion = (
+                f"I cannot retroactively alter past values of '{cov}'. "
+                f"However, I can show you what the forecast would look like "
+                f"if '{cov}' were removed or scaled in future periods — "
+                f"just ask me to remove or scale it."
+            )
+        else:
+            suggestion = (
+                "I can only modify future forecast inputs, not historical data. "
+                "Try asking me to remove or scale a specific covariate, "
+                "or to change the forecast horizon."
+            )
+
+        answer = (
+            f"{suggestion} "
+            f"For reference, the current forecast: {original.verbalization.summary}"
+        )
+
+        modification = ModificationResult(
+            covariates=self.covariates,
+            horizon=self.horizon,
+            description="Counterfactual query — historical inputs cannot be modified.",
             modified=False,
         )
 

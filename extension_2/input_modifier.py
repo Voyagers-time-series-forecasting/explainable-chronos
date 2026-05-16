@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from covariate_attribution import CovariateSet
+from extension_1.attribution.types import CovariateSet
 from extension_2.intent_parser import ParsedIntent
 
 logger = logging.getLogger(__name__)
