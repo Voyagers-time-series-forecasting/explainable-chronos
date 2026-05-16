@@ -1,11 +1,19 @@
 """LLM-as-judge for comparing forecast explanations from different pipeline configs.
 
-Uses the same hardware-adaptive model selection as the LLM verbalizer:
-  - CUDA available  → ``Qwen/Qwen2.5-7B-Instruct`` (fp16)
-  - CPU only        → ``Qwen/Qwen1.5-1.8B-Chat``
+The evaluation question is explicitly framed around **human preference**:
+"Would a practitioner (analyst, data scientist, business user) prefer this
+explanation over the alternative?"
 
-Prompt technique: one worked few-shot example followed by a chain-of-thought
-scaffold (Analyse A → Analyse B → Compare) so the model reasons before scoring.
+Each explanation receives a single ``human_preference`` score (1–5):
+  5 — strongly preferred: clear, useful, trustworthy
+  4 — preferred
+  3 — acceptable / neutral
+  2 — some reservations
+  1 — would not find it useful
+
+The winner is derived from those scores (higher wins; tie if |score_a − score_b| ≤ 1).
+
+Uses the same hardware-adaptive model selection as the LLM verbalizer.
 JSON is extracted from the response with a regex fallback to handle partial outputs.
 """
 
@@ -32,14 +40,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _JUDGE_SYSTEM = (
-    "You are an expert evaluator of time-series forecast explanations. "
-    "You reason carefully before scoring and always output valid JSON. "
-    "Your goal is to identify which explanation is more accurate, fluent, "
-    "and clear about what drove the forecast."
+    "You are simulating the preference of an expert practitioner — an analyst, "
+    "data scientist, or business user — reading a time-series forecast explanation. "
+    "Your task: judge which explanation a real human expert would prefer to read and act on. "
+    "Prefer explanations that are clear, concise, informative, and trustworthy. "
+    "Penalise verbosity, vagueness, hallucinated facts, and missing key information. "
+    "You reason step-by-step before scoring and always output valid JSON."
 )
 
 # ---------------------------------------------------------------------------
-# Few-shot example (one well-reasoned comparison)
+# Few-shot example
 # ---------------------------------------------------------------------------
 
 _JUDGE_FEW_SHOT = """\
@@ -47,59 +57,49 @@ _JUDGE_FEW_SHOT = """\
 FORECAST FACTS:
 - Trend: rising (sharply), slope=+0.1842
 - Uncertainty: moderate (stable)
-- Interval asymmetry: right_skewed
-- Downside risk: False, Upside potential: True
-- Regime shift: False
+- Downside risk: False  |  Upside potential: True
+- Top covariate: temperature (positive, 45.2% contribution)
 
 EXPLANATION A [template]:
-The P50 forecast is rising sharply. The prediction interval is moderate and stable. \
-Upside potential is flagged.
-NLI Consistency: 0.812
+The forecast indicates a sharply rising trend over the next 96 periods. \
+Prediction intervals are moderately wide and stable. \
+Temperature has a positive effect on the forecast, contributing 45.2% of the total attribution.
+NLI: 0.812  |  Fact recall: 0.67  |  Completeness: 0.80
 
 EXPLANATION B [llm]:
-The median forecast shows a sharp upward trajectory with a slope of +0.1842 per step. \
+The median forecast shows a sharp upward trajectory over the next 96 periods. \
 The prediction interval is moderate and stable, reflecting consistent forecast confidence. \
-The P90 quantile signals meaningful upside potential, with values potentially exceeding \
-120% of the last observed level.
-NLI Consistency: 0.851
+Temperature is the dominant positive driver, accounting for 45.2% of the total attribution. \
+The P90 quantile signals meaningful upside potential.
+NLI: 0.851  |  Fact recall: 1.00  |  Completeness: 1.00
 
-Step 1 — Analyse Explanation A: States the core facts (rising trend, moderate interval, \
-upside potential) but uses raw template phrasing ("is rising sharply", "is flagged") with \
-no quantitative context.
-Step 2 — Analyse Explanation B: Includes the specific slope value (+0.1842), explains what \
-upside potential means numerically (>120% of last observed), and uses professional prose.
-Step 3 — Compare: Both are factually accurate, but B provides more quantitative context \
-and is clearly more fluent and informative.
-OUTPUT: {"scores_a": {"factual_accuracy": 4, "fluency": 2, "attribution_clarity": 3}, \
-"scores_b": {"factual_accuracy": 5, "fluency": 5, "attribution_clarity": 4}, \
-"winner": "B", "reasoning": "B includes the specific slope value and quantitative upside \
-context, making it more informative and professional than A."}
+Step 1 — Analyse A: Covers the main facts in plain template language. Acceptable, \
+but the phrasing is mechanical and the upside potential flag is missing.
+Step 2 — Analyse B: Same facts, more natural prose, includes upside potential and \
+explicitly ties the quantile to the flag — a practitioner immediately knows what to watch.
+Step 3 — Which would a human prefer? B is more complete and reads as a professional \
+summary. A practitioner would prefer B.
+OUTPUT: {"score_a": 3, "score_b": 5, "winner": "B", \
+"reasoning": "B is more complete and professional; A omits the upside potential flag."}
 """
-
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CriterionScore:
-    """Per-explanation scores on three dimensions (1–5 each)."""
+    """Human-preference score for one explanation (1–5)."""
 
-    factual_accuracy: int   # Does the text match the numerical features?
-    fluency: int            # Is it natural and professional prose?
-    attribution_clarity: int  # Does it explain what drove the forecast?
+    human_preference: int
 
     @property
     def total(self) -> int:
-        return self.factual_accuracy + self.fluency + self.attribution_clarity
+        return self.human_preference
 
     def to_dict(self) -> dict[str, int]:
-        return {
-            "factual_accuracy": self.factual_accuracy,
-            "fluency": self.fluency,
-            "attribution_clarity": self.attribution_clarity,
-            "total": self.total,
-        }
+        return {"human_preference": self.human_preference}
 
 
 @dataclass
@@ -110,7 +110,7 @@ class JudgeVerdict:
     config_b: str
     scores_a: CriterionScore
     scores_b: CriterionScore
-    winner: str  # "A", "B", or "tie"
+    winner: str   # "A", "B", or "tie"
     reasoning: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +127,7 @@ class JudgeVerdict:
 # ---------------------------------------------------------------------------
 # Judge
 # ---------------------------------------------------------------------------
+
 
 class LLMJudge:
     """Compare forecast explanations using a local causal LLM.
@@ -156,11 +157,7 @@ class LLMJudge:
 
     @classmethod
     def from_verbalizer(cls, verbalizer: Any) -> LLMJudge:
-        """Construct a judge reusing an already-loaded ``LLMVerbalizer`` model.
-
-        Avoids loading the LLM weights a second time when the judge and
-        verbalizer share the same model family.
-        """
+        """Construct a judge reusing an already-loaded ``LLMVerbalizer`` model."""
         verbalizer._load_model()
         return cls(
             model_id=verbalizer.model_id,
@@ -176,7 +173,7 @@ class LLMJudge:
                 return
             device = "cuda" if torch.cuda.is_available() else "cpu"
             dtype = torch.float16 if device == "cuda" else torch.float32
-            logger.info("Loading judge LLM %s on %s (dtype=%s) …", self.model_id, device, dtype)
+            logger.info("Loading judge LLM %s on %s …", self.model_id, device)
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self.model_id, extra_special_tokens={}
             )
@@ -192,70 +189,78 @@ class LLMJudge:
         result_b: PipelineResult,
         config_b: str,
     ) -> str:
+        from extension_1.evaluation.factuality import (
+            compute_fact_recall,
+            compute_feature_completeness,
+        )
+
         f = result_a.features
+        attr_line = ""
+        if result_a.attribution and result_a.attribution.attributions:
+            top = result_a.attribution.attributions[0]
+            attr_line = f"\n- Top covariate: {top.name} ({top.relative_impact_pct:.1f}% contribution)"
+
         facts = (
             f"- Trend: {f.trend_direction} ({f.trend_magnitude}), slope={f.trend_slope:+.4f}\n"
             f"- Uncertainty: {f.uncertainty_level} ({f.uncertainty_trend})\n"
-            f"- Interval asymmetry: {f.asymmetry_label}\n"
-            f"- Downside risk: {f.downside_risk}, Upside potential: {f.upside_potential}\n"
-            f"- Regime shift detected: {f.regime_shift}"
+            f"- Downside risk: {f.downside_risk}  |  Upside potential: {f.upside_potential}"
+            f"{attr_line}"
         )
-        nli_a = result_a.consistency_report.overall_score
-        nli_b = result_b.consistency_report.overall_score
+
+        def _metrics(res: PipelineResult) -> str:
+            nli = res.consistency_report.overall_score
+            fr  = compute_fact_recall(res.features, res.attribution, res.verbalization.summary)
+            fc  = compute_feature_completeness(res.features, res.attribution, res.verbalization.summary)
+            return f"NLI: {nli:.3f}  |  Fact recall: {fr:.2f}  |  Completeness: {fc:.2f}"
 
         return (
-            "Evaluate two forecast explanations. "
-            "Follow the three-step reasoning scaffold, then output the JSON scores.\n\n"
+            "Evaluate the two explanations below. "
+            "For each, give a human_preference score 1–5 "
+            "(5 = a practitioner would strongly prefer this). "
+            "Derive the winner from whichever score is higher "
+            "(tie if |score_a − score_b| ≤ 1).\n\n"
             + _JUDGE_FEW_SHOT
             + "\n---\n\n"
             "## Now evaluate:\n"
             f"FORECAST FACTS:\n{facts}\n\n"
             f"EXPLANATION A [{config_a}]:\n{result_a.verbalization.summary}\n"
-            f"NLI Consistency: {nli_a:.3f}\n\n"
+            f"{_metrics(result_a)}\n\n"
             f"EXPLANATION B [{config_b}]:\n{result_b.verbalization.summary}\n"
-            f"NLI Consistency: {nli_b:.3f}\n\n"
-            "Step 1 — Analyse Explanation A:\n"
-            "Step 2 — Analyse Explanation B:\n"
-            "Step 3 — Compare and decide:\n"
-            "OUTPUT: "
-            '{"scores_a": {"factual_accuracy": N, "fluency": N, "attribution_clarity": N}, '
-            '"scores_b": {"factual_accuracy": N, "fluency": N, "attribution_clarity": N}, '
-            '"winner": "A" or "B" or "tie", "reasoning": "one sentence"}'
+            f"{_metrics(result_b)}\n\n"
+            "Step 1 — Analyse A:\n"
+            "Step 2 — Analyse B:\n"
+            "Step 3 — Which would a human prefer?\n"
+            'OUTPUT: {"score_a": N, "score_b": N, "winner": "A" or "B" or "tie", "reasoning": "one sentence"}'
         )
 
     def _parse_verdict(
         self, response: str, config_a: str, config_b: str
     ) -> JudgeVerdict:
-        """Extract JSON from the model response; fall back to a neutral tie on failure."""
         try:
             match = re.search(r"\{.*\}", response, re.DOTALL)
             if match:
                 data = json.loads(match.group())
-                sa = data["scores_a"]
-                sb = data["scores_b"]
+                sa = int(data.get("score_a", 3))
+                sb = int(data.get("score_b", 3))
                 winner = str(data.get("winner", "tie")).strip('"').strip("'")
                 if winner not in ("A", "B", "tie"):
-                    winner = "tie"
+                    # Derive from scores when the model ignores the field
+                    if abs(sa - sb) <= 1:
+                        winner = "tie"
+                    else:
+                        winner = "A" if sa > sb else "B"
                 return JudgeVerdict(
                     config_a=config_a,
                     config_b=config_b,
-                    scores_a=CriterionScore(
-                        factual_accuracy=int(sa["factual_accuracy"]),
-                        fluency=int(sa["fluency"]),
-                        attribution_clarity=int(sa["attribution_clarity"]),
-                    ),
-                    scores_b=CriterionScore(
-                        factual_accuracy=int(sb["factual_accuracy"]),
-                        fluency=int(sb["fluency"]),
-                        attribution_clarity=int(sb["attribution_clarity"]),
-                    ),
+                    scores_a=CriterionScore(human_preference=max(1, min(5, sa))),
+                    scores_b=CriterionScore(human_preference=max(1, min(5, sb))),
                     winner=winner,
                     reasoning=str(data.get("reasoning", "")),
                 )
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             logger.warning("Failed to parse judge JSON (%s); defaulting to tie.", exc)
 
-        fallback = CriterionScore(factual_accuracy=3, fluency=3, attribution_clarity=3)
+        fallback = CriterionScore(human_preference=3)
         return JudgeVerdict(
             config_a=config_a,
             config_b=config_b,
@@ -292,9 +297,9 @@ class LLMJudge:
         with torch.inference_mode():
             outputs = self._model.generate(
                 **inputs,
-                max_new_tokens=512,        # chain-of-thought needs room to reason
+                max_new_tokens=512,
                 do_sample=True,
-                temperature=0.2,           # low temperature → consistent scoring
+                temperature=0.2,
                 repetition_penalty=1.1,
             )
 
@@ -315,7 +320,9 @@ class LLMJudge:
             verdict = self.compare(results[key_a], key_a, results[key_b], key_b)
             verdicts.append(verdict)
             logger.info(
-                "Judge: %s vs %s → winner=%s (%s)",
-                key_a, key_b, verdict.winner, verdict.reasoning,
+                "Judge: %s (pref=%d) vs %s (pref=%d) -> winner=%s",
+                key_a, verdict.scores_a.human_preference,
+                key_b, verdict.scores_b.human_preference,
+                verdict.winner,
             )
         return verdicts

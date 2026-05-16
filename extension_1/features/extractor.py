@@ -6,11 +6,12 @@ quantile forecasts (P10 / P50 / P90) using only numpy and scipy.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
 from scipy import stats  # type: ignore
+from scipy.signal import argrelextrema  # type: ignore
 
 from extension_1.config import (
     EPSILON,
@@ -82,10 +83,69 @@ class ForecastFeatures:
     threshold_breaches: list[dict[str, Any]]
     horizon: int
     last_observed: float
+    # Trajectory narration (populated by extract_features when p50 is available)
+    trajectory: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise features to a plain dictionary."""
         return asdict(self)
+
+
+# ──────────────── Trajectory narration ───────────────────────────────
+
+@dataclass
+class TrajectorySegment:
+    start_step: int
+    end_step: int
+    start_value: float
+    end_value: float
+    direction: str        # "rises", "falls", "plateaus"
+    magnitude_pct: float  # % change relative to start
+
+
+@dataclass
+class TurningPoint:
+    step: int
+    value: float
+    kind: str             # "peak" or "trough"
+
+
+def extract_trajectory(p50: np.ndarray, last_observed: float) -> dict[str, Any]:
+    """Segment the P50 curve into meaningful narrative chunks.
+
+    Returns a dict with keys:
+      ``segments``, ``turning_points``, ``start_value``, ``end_value``, ``overall_range``
+    """
+    n = len(p50)
+
+    order = max(3, n // 10)
+    peaks = argrelextrema(p50, np.greater, order=order)[0]
+    troughs = argrelextrema(p50, np.less, order=order)[0]
+
+    turning_points = sorted(
+        [TurningPoint(int(i), float(p50[i]), "peak") for i in peaks]
+        + [TurningPoint(int(i), float(p50[i]), "trough") for i in troughs],
+        key=lambda x: x.step,
+    )
+
+    breakpoints = [0] + [tp.step for tp in turning_points] + [n - 1]
+    segments: list[TrajectorySegment] = []
+    for i in range(len(breakpoints) - 1):
+        s, e = breakpoints[i], breakpoints[i + 1]
+        if e == s:
+            continue
+        delta_pct = (p50[e] - p50[s]) / (abs(p50[s]) + 1e-9) * 100
+        direction = "rises" if delta_pct > 2 else "falls" if delta_pct < -2 else "plateaus"
+        segments.append(TrajectorySegment(s, e, float(p50[s]), float(p50[e]), direction, float(delta_pct)))
+
+    return {
+        "segments": segments,
+        "turning_points": turning_points,
+        "start_value": last_observed,
+        "end_value": float(p50[-1]),
+        "overall_range": (float(p50.min()), float(p50.max())),
+    }
+
 
 
 def extract_features(
@@ -192,6 +252,10 @@ def extract_features(
                         "step": step_idx,
                     })
 
+    # ── 7. Trajectory data ────────────────────────────────────────
+    # Sentence generation is handled by verbalization/trajectory.py
+    trajectory = extract_trajectory(p50, last_observed)
+
     features = ForecastFeatures(
         trend_direction=direction,
         trend_magnitude=magnitude,
@@ -211,6 +275,7 @@ def extract_features(
         threshold_breaches=breaches,
         horizon=horizon,
         last_observed=last_observed,
+        trajectory=trajectory,
     )
     logger.debug("Extracted features: %s", features)
     return features

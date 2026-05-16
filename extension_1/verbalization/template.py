@@ -9,6 +9,7 @@ from typing import Any
 
 from extension_1.config import RANDOM_SEED
 from extension_1.verbalization.types import VerbalizationResult
+from extension_1.verbalization.trajectory import verbalize_temporal_focus, verbalize_trajectory
 from extension_1.attribution.types import AttributionResult
 from extension_1.features.extractor import ForecastFeatures
 
@@ -76,24 +77,11 @@ class DiscoursePlanner:
                         "nucleus": f"the forecast trend is {features.trend_direction}",
                         "satellite": (
                             f"primarily driven by {top.name} "
-                            f"({top.direction} impact, {top.relative_impact_pct:.1f}% contribution)"
+                            f"({top.relative_impact_pct:.1f}% contribution)"
                         ),
                     },
                 ))
 
-            if len(attribution.attributions) >= 2:
-                a, b = attribution.attributions[0], attribution.attributions[1]
-                if a.direction != b.direction and b.relative_impact_pct > 15:
-                    relations.append((
-                        RSTRelation.CONTRAST,
-                        {
-                            "nucleus": f"{a.name} has a {a.direction} effect ({a.relative_impact_pct:.1f}%)",
-                            "satellite": (
-                                f"{b.name} pushes in the {b.direction} direction "
-                                f"({b.relative_impact_pct:.1f}%)"
-                            ),
-                        },
-                    ))
 
         return relations
 
@@ -241,14 +229,19 @@ class TemplateVerbalizer:
             "horizon": features.horizon,
         }
 
-        # ── Sentence 2: Uncertainty ───────────────────────────────
+        # ── Sentence 2: Trajectory (concrete P50 values + turning points) ──
+        if features.trajectory:
+            traj_sentence, traj_grounding = verbalize_trajectory(features.trajectory)
+            sentences.append(traj_sentence)
+            grounding[f"sentence_{len(sentences) - 1}"] = traj_grounding
+
         sentences.append(
             f"Prediction intervals are "
             f"{rng.choice(_UNCERTAINTY_LEVEL_PHRASES[features.uncertainty_level])} and "
             f"{rng.choice(_UNCERTAINTY_TREND_PHRASES[features.uncertainty_trend])}, "
             f"suggesting {_UNCERTAINTY_INTERPRETATION[features.uncertainty_level][features.uncertainty_trend]}."
         )
-        grounding["sentence_1"] = {
+        grounding[f"sentence_{len(sentences) - 1}"] = {
             "type": "uncertainty",
             "uncertainty_level": features.uncertainty_level,
             "uncertainty_trend": features.uncertainty_trend,
@@ -291,7 +284,7 @@ class TemplateVerbalizer:
         if attribution and attribution.attributions:
             for attr in attribution.attributions[: attribution.top_k]:
                 sentences.append(
-                    f"{attr.name.replace('_', ' ').title()} has a {attr.direction} effect "
+                    f"{attr.name.replace('_', ' ').title()} has a positive effect "
                     f"on the forecast, contributing {attr.relative_impact_pct:.1f}% of the "
                     f"total attribution."
                 )
@@ -299,9 +292,18 @@ class TemplateVerbalizer:
                     "type": "attribution",
                     "covariate_name": attr.name,
                     "importance_score": attr.importance_score,
-                    "direction": attr.direction,
                     "relative_impact_pct": attr.relative_impact_pct,
                 }
+
+        # ── Temporal focus sentence (conditional on non-trivial saliency) ──
+        if attribution and attribution.temporal:
+            history_length = len(attribution.temporal[0].saliency)
+            tpf_sentence, tpf_grounding = verbalize_temporal_focus(
+                attribution.temporal, history_length
+            )
+            if tpf_sentence:
+                sentences.append(tpf_sentence)
+                grounding[f"sentence_{len(sentences) - 1}"] = tpf_grounding
 
         return VerbalizationResult(
             summary=" ".join(sentences),

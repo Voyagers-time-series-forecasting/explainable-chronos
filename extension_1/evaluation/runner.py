@@ -44,7 +44,8 @@ import yfinance as yf
 
 from extension_1.config import PipelineConfig, RANDOM_SEED
 from extension_1.evaluation.scoring import NLIConsistencyScorer
-from extension_1.attribution.base import CovariateSet
+from extension_1.evaluation.factuality import compute_fact_recall, compute_feature_completeness
+from extension_1.attribution.types import CovariateSet
 from extension_1.evaluation.judge import LLMJudge
 from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.evaluation.trace import render_trace
@@ -473,18 +474,24 @@ def run_evaluation(
                 }
 
                 past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
-                future_attrs = [a for a in result.attribution.attributions if "(future)" in a.name]
                 record["top_covariate"] = past_attrs[0].name if past_attrs else None
                 record["top_covariate_impact_pct"] = past_attrs[0].relative_impact_pct if past_attrs else None
-                record["top_future_covariate"] = future_attrs[0].name if future_attrs else None
-                record["top_future_covariate_impact_pct"] = future_attrs[0].relative_impact_pct if future_attrs else None
+                record["fact_recall"] = compute_fact_recall(
+                    result.features, result.attribution, result.verbalization.summary
+                )
+                record["feature_completeness"] = compute_feature_completeness(
+                    result.features, result.attribution, result.verbalization.summary
+                )
 
                 records.append(record)
                 logger.info(
                     "[%s] window %d/%d [%s]  "
-                    "consistency=%.4f  mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
+                    "nli=%.3f  recall=%.2f  completeness=%.2f  "
+                    "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
                     spec.name, w_idx + 1, len(windows), v_type,
                     result.consistency_report.overall_score,
+                    record["fact_recall"],
+                    record["feature_completeness"],
                     accuracy["mase"],
                     accuracy["fair_mase"],
                     accuracy["coverage_pct"],
@@ -501,7 +508,6 @@ def run_evaluation(
                             verbalizer_type=v_type,
                             output_dir=traces_dir,
                             covariates=cov_set,
-                            future_covariates=future_cov_set,
                         )
                     except Exception as te:
                         logger.warning("Trace rendering failed [%s/%s]: %s", spec.name, v_type, te)
@@ -535,17 +541,17 @@ def run_evaluation(
 # ══════════════════ reporting ══════════════════════════════════════════
 
 def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
-    """Generate comparison plots for evaluation."""
+    """Generate 2×2 comparison plots for evaluation."""
     save_path = save_dir / "evaluation_plots.png"
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    axes = axes.flatten()
 
     datasets = sorted(df["dataset"].unique())
     v_colors = {"Template": "#4c72b0", "LLM": "#dd8452"}
-
-    n_ds = len(datasets)
-    x = np.arange(n_ds)
     v_types = sorted(df["verbalizer_type"].unique())
     n_types = len(v_types)
+    n_ds = len(datasets)
+    x = np.arange(n_ds)
     bar_width = 0.6 / max(n_types, 1)
     offsets = np.linspace(
         -bar_width * (n_types - 1) / 2,
@@ -553,53 +559,83 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
         n_types,
     )
 
-    # Plot 1 — MASE by dataset × verbalizer
-    for i, vt in enumerate(v_types):
-        means = [
-            df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)]["mase"].mean()
+    def _ds_means(col: str, vt: str) -> list[float]:
+        return [
+            df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)][col].mean()
             if len(df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)]) > 0
-            else 0
+            else 0.0
             for ds in datasets
         ]
-        axes[0].bar(x + offsets[i], means, bar_width,
+
+    # ── Panel 1: MASE by dataset ────────────────────────────────────────
+    for i, vt in enumerate(v_types):
+        axes[0].bar(x + offsets[i], _ds_means("mase", vt), bar_width,
                     label=vt, color=v_colors.get(vt, "grey"), alpha=0.8)
     axes[0].set_title("MASE by Dataset")
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(datasets)
+    axes[0].set_xticks(x); axes[0].set_xticklabels(datasets, rotation=15)
     axes[0].set_ylabel("MASE (lower is better)")
     axes[0].axhline(1.0, color="red", linestyle="--", alpha=0.5, label="naive baseline")
-    axes[0].legend()
+    axes[0].legend(fontsize=8)
 
-    # Plot 2 — Coverage by dataset × verbalizer
+    # ── Panel 2: Coverage by dataset ────────────────────────────────────
     for i, vt in enumerate(v_types):
-        means = [
-            df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)]["coverage_pct"].mean()
-            if len(df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)]) > 0
-            else 0
-            for ds in datasets
-        ]
-        axes[1].bar(x + offsets[i], means, bar_width,
+        axes[1].bar(x + offsets[i], _ds_means("coverage_pct", vt), bar_width,
                     label=vt, color=v_colors.get(vt, "grey"), alpha=0.8)
     axes[1].set_title("P10-P90 Coverage by Dataset")
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(datasets)
+    axes[1].set_xticks(x); axes[1].set_xticklabels(datasets, rotation=15)
     axes[1].set_ylabel("Coverage % (higher is better)")
     axes[1].axhline(80.0, color="green", linestyle="--", alpha=0.5, label="80% target")
-    axes[1].legend()
+    axes[1].legend(fontsize=8)
 
-    # Plot 3 — NLI Consistency boxplot by verbalizer
+    # ── Panel 3: NLI Consistency boxplot ────────────────────────────────
     data_groups = [
-        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].values
+        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].dropna().values
         for vt in v_types
     ]
     bp = axes[2].boxplot(data_groups, tick_labels=v_types, patch_artist=True)
     for patch, vt in zip(bp["boxes"], v_types):
-        patch.set_facecolor(v_colors.get(vt, "grey"))
-        patch.set_alpha(0.7)
+        patch.set_facecolor(v_colors.get(vt, "grey")); patch.set_alpha(0.7)
     axes[2].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold (0.70)")
     axes[2].set_title("NLI Consistency by Verbalizer")
-    axes[2].set_ylabel("Entailment Score")
-    axes[2].legend()
+    axes[2].set_ylabel("Entailment score")
+    axes[2].legend(fontsize=8)
+
+    # ── Panel 4: Text quality (fact recall + feature completeness) ───────
+    quality_cols = [c for c in ("fact_recall", "feature_completeness") if c in df.columns]
+    if quality_cols:
+        n_metrics = len(quality_cols)
+        labels = v_types
+        q_x = np.arange(n_types)
+        col_colors = {"fact_recall": "#2ecc71", "feature_completeness": "#9b59b6"}
+        col_labels = {"fact_recall": "Fact recall", "feature_completeness": "Completeness"}
+        metric_width = 0.35 / max(n_metrics, 1)
+        metric_offsets = np.linspace(
+            -metric_width * (n_metrics - 1) / 2,
+            metric_width * (n_metrics - 1) / 2,
+            n_metrics,
+        )
+        for j, col in enumerate(quality_cols):
+            means = [
+                df[df["verbalizer_type"] == vt][col].mean()
+                if col in df.columns and len(df[df["verbalizer_type"] == vt]) > 0
+                else 0.0
+                for vt in v_types
+            ]
+            axes[3].bar(
+                q_x + metric_offsets[j], means, metric_width,
+                label=col_labels.get(col, col),
+                color=col_colors.get(col, "grey"), alpha=0.8,
+            )
+        axes[3].set_title("Text Quality by Verbalizer")
+        axes[3].set_xticks(q_x); axes[3].set_xticklabels(labels)
+        axes[3].set_ylabel("Score (higher is better)")
+        axes[3].set_ylim(0, 1.05)
+        axes[3].axhline(1.0, color="grey", linestyle="--", alpha=0.3)
+        axes[3].legend(fontsize=8)
+    else:
+        axes[3].text(0.5, 0.5, "No text quality data",
+                     ha="center", va="center", transform=axes[3].transAxes)
+        axes[3].axis("off")
 
     plt.tight_layout()
     plt.savefig(str(save_path), dpi=300)
@@ -633,6 +669,10 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
     lines.append(f"| Verbalizers | {', '.join(sorted(df['verbalizer_type'].unique()))} |")
     lines.append(f"| Mean NLI consistency | {df['overall_consistency'].mean():.4f} |")
     lines.append(f"| PASS rate (≥ 0.70) | {df['is_consistent'].mean()*100:.1f}% |")
+    if "fact_recall" in df.columns:
+        lines.append(f"| Mean fact recall | {df['fact_recall'].mean():.4f} |")
+    if "feature_completeness" in df.columns:
+        lines.append(f"| Mean feature completeness | {df['feature_completeness'].mean():.4f} |")
     lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
     lines.append(f"| Mean First-Step MASE | {df['mase_first'].mean():.4f} |")
     lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
@@ -665,8 +705,32 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
     lines.append("")
 
+    has_recall = "fact_recall" in df.columns
+    has_compl  = "feature_completeness" in df.columns
+    if has_recall or has_compl:
+        lines.append("## 4. Text Quality by Verbalizer Type")
+        lines.append("")
+        header = "| Verbalizer |"
+        sep    = "|---|"
+        if has_recall:
+            header += " Fact Recall (mean) |"
+            sep    += "---|"
+        if has_compl:
+            header += " Feature Completeness (mean) |"
+            sep    += "---|"
+        lines.append(header)
+        lines.append(sep)
+        for vt, grp in df.groupby("verbalizer_type"):
+            row = f"| {vt} |"
+            if has_recall:
+                row += f" {grp['fact_recall'].mean():.4f} |"
+            if has_compl:
+                row += f" {grp['feature_completeness'].mean():.4f} |"
+            lines.append(row)
+        lines.append("")
+
     if "top_covariate" in df.columns and df["top_covariate"].notna().any():
-        lines.append("## 4. Covariate Attribution (Attention Rollout)")
+        lines.append("## 5. Covariate Attribution (Attention Rollout)")
         lines.append("")
         top_counts = df["top_covariate"].value_counts().head(5)
         lines.append(
@@ -681,10 +745,13 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         try:
             jdf = pd.read_csv(judge_path)
             if not jdf.empty:
-                lines.append("## 5. LLM Judge — Win Rates")
+                lines.append("## 6. LLM Judge — Human Preference Win Rates")
                 lines.append("")
                 lines.append("| Config | Wins | Ties | Losses | Win Rate |")
                 lines.append("|---|---|---|---|---|")
+                all_configs = set(jdf["config_a"].tolist() + jdf["config_b"].tolist())
+                lines.append("| Config | Wins | Ties | Losses | Win Rate | Mean Preference |")
+                lines.append("|---|---|---|---|---|---|")
                 all_configs = set(jdf["config_a"].tolist() + jdf["config_b"].tolist())
                 for cfg in sorted(all_configs):
                     wins = int(
@@ -700,7 +767,21 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
                     )
                     losses = total - wins - ties
                     rate = wins / total * 100 if total > 0 else 0.0
-                    lines.append(f"| {cfg} | {wins} | {ties} | {losses} | {rate:.1f}% |")
+                    # Extract mean human_preference score from the JSON blobs
+                    pref_scores: list[float] = []
+                    for _, row in jdf.iterrows():
+                        try:
+                            if row["config_a"] == cfg:
+                                pref_scores.append(json.loads(row["scores_a"])["human_preference"])
+                            elif row["config_b"] == cfg:
+                                pref_scores.append(json.loads(row["scores_b"])["human_preference"])
+                        except (KeyError, ValueError, TypeError):
+                            pass
+                    mean_pref = sum(pref_scores) / len(pref_scores) if pref_scores else float("nan")
+                    lines.append(
+                        f"| {cfg} | {wins} | {ties} | {losses} | {rate:.1f}% "
+                        f"| {mean_pref:.2f}/5 |"
+                    )
                 lines.append("")
         except Exception:
             pass
@@ -722,6 +803,10 @@ def print_summary(df: pd.DataFrame) -> None:
     print(df.groupby("dataset")[["mase", "mase_first", "fair_mase", "coverage_pct"]].mean().round(4))
     print("\n  NLI Consistency by verbalizer:")
     print(df.groupby("verbalizer_type")["overall_consistency"].agg(["mean", "std"]).round(4))
+    text_quality_cols = [c for c in ("fact_recall", "feature_completeness") if c in df.columns]
+    if text_quality_cols:
+        print("\n  Text quality by verbalizer:")
+        print(df.groupby("verbalizer_type")[text_quality_cols].mean().round(4))
     print()
 
 

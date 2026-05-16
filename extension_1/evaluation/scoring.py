@@ -121,16 +121,38 @@ def render_premise(grounding: Dict[str, Any]) -> str:
 
     if gtype == "attribution":
         name = grounding.get("covariate_name", "unknown")
-        direction = grounding.get("direction", "unknown")
         impact = grounding.get("relative_impact_pct", 0)
         importance_score = grounding.get("importance_score", 0)
         return (
-            f"The covariate '{name}' has a {direction} effect on the forecast. "
-            f"Its attribution importance score is {importance_score:.4f}, contributing "
-            f"{impact:.1f}% of the total forecast attribution."
+            f"The covariate '{name}' contributes {impact:.1f}% to the total forecast attribution "
+            f"(importance score: {importance_score:.4f})."
         )
 
-    return " ".join(f"{k}: {v}" for k, v in grounding.items())
+    if gtype == "trajectory":
+        start = grounding.get("start_value", "?")
+        end = grounding.get("end_value", "?")
+        pct = grounding.get("pct_change", 0)
+        direction = grounding.get("end_direction", "unknown")
+        tps = grounding.get("turning_points", [])
+        tp_str = (
+            f" The series passes through {len(tps)} turning point(s)."
+            if tps else ""
+        )
+        return (
+            f"The median forecast starts near {start:.2f} and ends near {end:.2f}, "
+            f"a change of {pct:.1f}% {direction} the starting level.{tp_str}"
+        )
+
+    if gtype == "temporal_focus":
+        covariates = grounding.get("covariates", [])
+        if covariates:
+            names = ", ".join(c.get("covariate_name", "?") for c in covariates)
+            return f"The model's temporal attention focused on: {names}."
+        return "Temporal attention data is available."
+
+    # Generic fallback — filter out non-serialisable values to avoid empty strings
+    parts = [f"{k}: {v}" for k, v in grounding.items() if isinstance(v, (str, int, float, bool))]
+    return " ".join(parts) if parts else "Grounding information is available."
 
 
 # ────────────── NLI Consistency Scorer ────────────────────────────────
@@ -186,6 +208,19 @@ class NLIConsistencyScorer:
             grounding = verbalization.grounding.get(f"sentence_{idx}", {})
             premise = render_premise(grounding)
 
+            if not premise.strip() or not sentence.strip():
+                logger.debug("Skipping NLI for sentence %d — empty premise or sentence.", idx)
+                sentence_scores.append(
+                    SentenceScore(
+                        sentence=sentence,
+                        premise=premise,
+                        entailment_prob=0.5,
+                        neutral_prob=0.3,
+                        contradiction_prob=0.2,
+                    )
+                )
+                continue
+
             result = pipe(
                 premise,
                 candidate_labels=[sentence],
@@ -204,7 +239,7 @@ class NLIConsistencyScorer:
                 )
             )
 
-        overall = float(np.mean([s.entailment_prob for s in sentence_scores]))
+        overall = float(np.mean([s.entailment_prob for s in sentence_scores])) if sentence_scores else 0.0
         return ConsistencyReport(
             overall_score=overall,
             sentence_scores=sentence_scores,
