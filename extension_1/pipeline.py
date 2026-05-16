@@ -123,8 +123,7 @@ class VerbalizationPipeline:
         # Stage B — Covariate attribution (attention rollout)
         attribution = AttentionAttributor(
             top_k=self.config.attribution_top_k,
-        ).explain(covariates, attention_weights=attention_weights,
-                  future_covariates=future_covariates)
+        ).explain(covariates, attention_weights=attention_weights)
         logger.info(
             "Attribution: top=%s (%.1f%%)",
             attribution.attributions[0].name if attribution.attributions else "?",

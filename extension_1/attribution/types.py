@@ -41,8 +41,21 @@ class CovariateAttribution:
 
     name: str
     importance_score: float
-    direction: str
     relative_impact_pct: float
+
+
+@dataclass
+class TemporalAttribution:
+    """Per-covariate temporal saliency over the history window."""
+
+    covariate_name: str
+    # saliency[i] = aggregated attention score at history step i
+    # normalized to sum to 1; length = history_length
+    saliency: np.ndarray
+    # History index with the highest saliency
+    peak_step: int
+    # Normalized entropy: 0 = attention on a single step, 1 = uniform
+    focus_breadth: float
 
 
 @dataclass
@@ -51,3 +64,6 @@ class AttributionResult:
 
     attributions: list[CovariateAttribution]
     top_k: int = 5
+    temporal: list[TemporalAttribution] = field(default_factory=list)
+    # history_length / n_patches — useful for converting patch indices back to steps
+    patch_to_step_ratio: float = 1.0

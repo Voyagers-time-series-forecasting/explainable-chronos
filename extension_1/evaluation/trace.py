@@ -17,6 +17,7 @@ import numpy as np
 
 from extension_1.attribution.types import CovariateSet
 from extension_1.pipeline import PipelineResult
+from extension_1.verbalization.trajectory import verbalize_temporal_focus, verbalize_trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -35,42 +36,12 @@ def _nli_color(score: float) -> str:
     return _NLI_RED
 
 
-def _extract_attention_signal(attention_weights: dict) -> Optional[np.ndarray]:
-    """Return a 1-D per-timestep importance signal from raw attention weights.
-
-    Averages across layers and heads, then sums over query dimension to
-    produce a ``(seq_len,)`` array showing which history positions were
-    most attended to.  Returns ``None`` on any structural mismatch.
-    """
-    try:
-        attn_layers = attention_weights["attentions"]["enc_time_self_attn_weights"]
-        if not attn_layers:
-            return None
-        accumulated = None
-        for layer in attn_layers:
-            # layer: (batch, heads, seq, seq) — could be torch.Tensor or np.ndarray
-            try:
-                arr = layer.detach().cpu().numpy()
-            except AttributeError:
-                arr = np.asarray(layer)
-            avg = arr[0].mean(axis=0)  # (seq, seq) — average over heads
-            accumulated = avg if accumulated is None else accumulated + avg
-        if accumulated is None:
-            return None
-        signal = accumulated.mean(axis=0)  # (seq,) — mean query contribution per key
-        total = signal.sum()
-        return signal / total if total > 1e-12 else signal
-    except (KeyError, IndexError, TypeError):
-        return None
-
-
 def _plot_forecast(
     ax: plt.Axes,
     history: np.ndarray,
     result: PipelineResult,
     actuals: Optional[np.ndarray],
     covariates: Optional[CovariateSet],
-    future_covariates: Optional[CovariateSet] = None,
 ) -> None:
     tail = history[-_HISTORY_TAIL:]
     h_steps = np.arange(-len(tail), 0)
@@ -122,35 +93,6 @@ def _plot_forecast(
     ax.tick_params(labelsize=8)
 
 
-def _plot_attention(
-    ax: plt.Axes,
-    result: PipelineResult,
-) -> None:
-    signal = None
-    if result.attention_weights:
-        signal = _extract_attention_signal(result.attention_weights)
-
-    if signal is None or len(signal) == 0:
-        ax.text(
-            0.5, 0.5, "No attention weights available",
-            ha="center", va="center", transform=ax.transAxes, fontsize=9, color="#888",
-        )
-        ax.set_title("Attention Weights", fontsize=10, fontweight="bold")
-        ax.axis("off")
-        return
-
-    # Plot signal against Patch Index instead of raw time steps
-    # since we don't have the exact tokenizer patch stride/padding here.
-    seq = len(signal)
-    patches = np.arange(seq)
-
-    ax.bar(patches, signal, width=0.8, color="#8e44ad", alpha=0.75)
-    ax.set_title("Temporal Attention (per model patch)", fontsize=10, fontweight="bold")
-    ax.set_xlabel("Patch Index (0 = oldest context)", fontsize=8)
-    ax.set_ylabel("Normalised attention", fontsize=8)
-    ax.tick_params(labelsize=8)
-
-
 def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     if result.attribution is None or not result.attribution.attributions:
         ax.text(
@@ -164,24 +106,56 @@ def _plot_attribution(ax: plt.Axes, result: PipelineResult) -> None:
     attrs = result.attribution.attributions[: result.attribution.top_k]
     names = [a.name.replace("_", " ").title() for a in attrs]
     impacts = [a.relative_impact_pct for a in attrs]
-    colors = [_NLI_GREEN if a.direction == "positive" else _NLI_RED for a in attrs]
 
     y = np.arange(len(names))
-    for j, (impact, color) in enumerate(zip(impacts, colors)):
-        ax.barh(y[j], impact, color=color, alpha=0.8)
+    for j, impact in enumerate(impacts):
+        ax.barh(y[j], impact, color=_NLI_GREEN, alpha=0.8)
     ax.set_yticks(y)
     ax.set_yticklabels(names, fontsize=8)
     ax.set_xlabel("Relative impact (%)", fontsize=8)
     ax.tick_params(labelsize=8)
+    ax.set_title("Covariate Attribution (Attention Rollout)", fontsize=10, fontweight="bold")
 
-    ax.set_title("Attribution (Attention Rollout)", fontsize=10, fontweight="bold")
 
-    from matplotlib.patches import Patch
-    legend_elements = [
-        Patch(facecolor=_NLI_GREEN, alpha=0.8, label="Positive impact"),
-        Patch(facecolor=_NLI_RED, alpha=0.8, label="Negative impact"),
-    ]
-    ax.legend(handles=legend_elements, fontsize=7, loc="lower right")
+def _plot_temporal_saliency(ax: plt.Axes, result: PipelineResult) -> None:
+    temporal = getattr(result.attribution, "temporal", None) if result.attribution else None
+
+    if not temporal:
+        ax.text(
+            0.5, 0.5, "No temporal saliency data",
+            ha="center", va="center", transform=ax.transAxes, fontsize=9, color="#888",
+        )
+        ax.set_title("Temporal Saliency", fontsize=10, fontweight="bold")
+        ax.axis("off")
+        return
+
+    history_length = len(temporal[0].saliency)
+    steps = np.arange(history_length)
+
+    for i, ta in enumerate(temporal):
+        color = _CMAP_COV(i % 10)
+        ax.plot(steps, ta.saliency, color=color, linewidth=1.4, label=ta.covariate_name)
+
+        # Shade the top-25% attention region
+        threshold = np.percentile(ta.saliency, 75)
+        ax.fill_between(
+            steps, 0, ta.saliency,
+            where=ta.saliency >= threshold,
+            color=color, alpha=0.20,
+        )
+
+    ax.set_title("Temporal Saliency (per covariate, Attention Rollout)", fontsize=10, fontweight="bold")
+    ax.set_xlabel("History step (0 = oldest)", fontsize=8)
+    ax.set_ylabel("Normalised attention", fontsize=8)
+    ax.tick_params(labelsize=8)
+    ax.legend(fontsize=7, loc="upper left", framealpha=0.5)
+
+    tpf_sentence, _ = verbalize_temporal_focus(temporal, history_length)
+    if tpf_sentence:
+        ax.set_xlabel(
+            f"History step (0 = oldest)   |   {tpf_sentence}",
+            fontsize=7, color="#555",
+        )
 
 
 def _plot_nli(ax: plt.Axes, result: PipelineResult) -> None:
@@ -211,10 +185,8 @@ def _plot_nli(ax: plt.Axes, result: PipelineResult) -> None:
         y = 0.95 - (i + 1) * line_height
         score = ss.entailment_prob
         color = _nli_color(score)
-        # Score badge
         ax.text(0.0, y, f"{score:.2f}", transform=ax.transAxes, fontsize=7,
                 color=color, fontweight="bold", va="top")
-        # Sentence text (wrapped)
         wrapped = textwrap.shorten(ss.sentence, width=120, placeholder="…")
         ax.text(0.06, y, wrapped, transform=ax.transAxes, fontsize=7,
                 color="#2c3e50", va="top")
@@ -231,7 +203,6 @@ def render_trace(
     verbalizer_type: str,
     output_dir: Path,
     covariates: Optional[CovariateSet] = None,
-    future_covariates: Optional[CovariateSet] = None,
 ) -> Path:
     """Render and save a multi-panel trace figure for one pipeline scenario.
 
@@ -250,8 +221,6 @@ def render_trace(
         Directory where the PNG will be saved.
     covariates : CovariateSet, optional
         Past covariates — overlaid on history portion of the forecast panel.
-    future_covariates : CovariateSet, optional
-        Future covariates — overlaid on forecast portion (dotted lines).
 
     Returns
     -------
@@ -261,59 +230,70 @@ def render_trace(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig = Figure(figsize=(16, 11), constrained_layout=True)
-    canvas = FigureCanvasAgg(fig)
+    fig = Figure(figsize=(16, 14), constrained_layout=True)
+    FigureCanvasAgg(fig)
     fig.suptitle(
         f"Trace — {dataset_name}  window {window_idx:02d}  [{verbalizer_type}]",
         fontsize=11, fontweight="bold",
     )
 
     gs = gridspec.GridSpec(
-        3, 2,
+        4, 1,
         figure=fig,
-        height_ratios=[3, 2.2, 1.8],
+        height_ratios=[3, 1.8, 2.2, 1.8],
         hspace=0.35,
-        wspace=0.30,
     )
 
-    ax_forecast = fig.add_subplot(gs[0, :])
-    ax_attention = fig.add_subplot(gs[1, 0])
-    ax_attribution = fig.add_subplot(gs[1, 1])
-    ax_nli = fig.add_subplot(gs[2, :])
+    ax_forecast   = fig.add_subplot(gs[0])
+    ax_attribution = fig.add_subplot(gs[1])
+    ax_temporal    = fig.add_subplot(gs[2])
+    ax_nli         = fig.add_subplot(gs[3])
 
-    _plot_forecast(ax_forecast, history, result, actuals, covariates, future_covariates)
-    _plot_attention(ax_attention, result)
+    _plot_forecast(ax_forecast, history, result, actuals, covariates)
     _plot_attribution(ax_attribution, result)
+    _plot_temporal_saliency(ax_temporal, result)
     _plot_nli(ax_nli, result)
 
     fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.png"
     out_path = output_dir / fname
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     logger.info("Trace saved: %s", out_path)
-    
-    # Save accompanying text trace
+
     txt_fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.txt"
     txt_out_path = output_dir / txt_fname
     try:
         with open(txt_out_path, "w", encoding="utf-8") as f:
             f.write(f"=== TRACE CONTEXT: {dataset_name} Window {window_idx:02d} [{verbalizer_type}] ===\n\n")
-            
+
             f.write("--- 1. EXTRACTED FEATURES (CONTEXT) ---\n")
             if hasattr(result, "features") and result.features:
                 for k, v in result.features.to_dict().items():
+                    if k in ("trajectory", "trajectory_sentence"):
+                        continue
                     f.write(f"{k}: {v}\n")
+                if result.features.trajectory:
+                    traj_sentence, _ = verbalize_trajectory(result.features.trajectory)
+                    f.write("\n--- 1b. TRAJECTORY NARRATION ---\n")
+                    f.write(traj_sentence + "\n")
+                    traj = result.features.trajectory
+                    tps = traj.get("turning_points", [])
+                    if tps:
+                        f.write("Turning points:\n")
+                        for tp in tps:
+                            f.write(f"  step {tp.step}: {tp.kind} at {tp.value:.3f}\n")
+                    f.write(f"Overall range: {traj.get('overall_range', ('?', '?'))}\n")
             else:
                 f.write("No features extracted.\n")
             f.write("\n")
-            
+
             f.write("--- 2. ATTRIBUTION ---\n")
             if hasattr(result, "attribution") and result.attribution and result.attribution.attributions:
                 for a in result.attribution.attributions[:result.attribution.top_k]:
-                    f.write(f"{a.name}: {a.relative_impact_pct:.1f}% ({a.direction})\n")
+                    f.write(f"{a.name}: {a.relative_impact_pct:.1f}%\n")
             else:
                 f.write("No attribution data.\n")
             f.write("\n")
-            
+
             f.write("--- 3. RST TEMPLATE / DRAFT ---\n")
             verb_res = result.verbalization
             if getattr(verb_res, "draft_summary", None):
@@ -325,14 +305,14 @@ def render_trace(
             else:
                 f.write("No RST relations triggered.\n")
             f.write("\n")
-            
+
             f.write("--- 4. LLM PROMPT ---\n")
             if getattr(verb_res, "prompt", None):
                 f.write(verb_res.prompt)
             else:
                 f.write("No LLM Prompt used.\n")
             f.write("\n\n")
-            
+
             f.write("--- 5. FINAL RESULT ---\n")
             f.write(verb_res.summary)
             f.write("\n")

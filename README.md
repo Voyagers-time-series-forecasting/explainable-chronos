@@ -1,101 +1,52 @@
-# explainable-chronos
+# Explainable Chronos
 
-Run commands from the repository root:
+A modular NLP framework that sits on top of [Chronos-2](https://github.com/amazon-science/chronos-forecasting) at inference time to produce natural-language explanations of probabilistic time-series forecasts.
 
-```powershell
-python run_extensions.py ext1 <experiment> [options]
-```
+## Overview
+
+**Extension 1 — Verbalization and Consistency Scoring**
+
+Given a Chronos-2 quantile forecast (P10/P50/P90), the pipeline:
+1. Extracts interpretable numerical features (trend, uncertainty, regime shift, trajectory, covariate attribution)
+2. Computes covariate importance and temporal saliency via Attention Rollout
+3. Generates a natural-language summary via a Template or LLM verbalizer
+4. Scores each sentence for factual consistency using NLI (BART-large-MNLI)
 
 ## Repository Layout
 
-```text
+```
 explainable-chronos/
 ├── run_extensions.py          # CLI entry point
 ├── requirements.txt
+├── notebooks/
+│   ├── demo.ipynb             # Framework demo — three synthetic scenarios with visualisations
+│   └── run_evaluation.ipynb   # Full benchmark evaluation (Colab-ready)
 ├── shared/
-│   ├── forecast_provider.py   # Chronos-2 inference wrapper
-│   └── __init__.py
+│   └── forecast_provider.py   # Chronos-2 inference wrapper
 ├── extension_1/
-│   ├── config.py              # All thresholds and constants
+│   ├── config.py              # Thresholds and constants
 │   ├── pipeline.py            # End-to-end orchestration
 │   ├── features/
 │   │   └── extractor.py       # Forecast feature extraction
 │   ├── verbalization/
-│   │   ├── template.py        # RST-based TemplateVerbalizer (Approach A)
-│   │   └── llm.py             # LLM-refined LLMVerbalizer (Approach B)
+│   │   ├── template.py        # Template verbalizer
+│   │   ├── llm.py             # LLM verbalizer (Qwen2.5-7B-Instruct)
+│   │   └── trajectory.py      # Trajectory narration helpers
 │   ├── attribution/
-│   │   ├── base.py            # CovariateSet, AttributionResult, factory
-│   │   ├── shap.py            # SurrogateExplainer (XGBoost + SHAP)
-│   │   └── attention.py       # AttentionAttributor (Attention Rollout)
+│   │   ├── attention.py       # Attention Rollout attributor
+│   │   └── types.py           # Attribution data types
 │   └── evaluation/
 │       ├── runner.py          # Benchmark evaluation loop
 │       ├── scoring.py         # NLI consistency scorer
-│       ├── trace.py           # Per-scenario trace visualisation
-│       └── judge.py           # LLM-as-judge pairwise comparison
+│       ├── factuality.py      # Fact recall and feature completeness
+│       ├── judge.py           # LLM-as-judge pairwise comparison
+│       └── trace.py           # Per-scenario trace visualisation
 └── results/
     └── extension_1/           # All evaluation outputs
 ```
 
-## Experiment Tree
+## Quick Start
 
-```text
-ext1
-`-- evaluate
-    |-- Purpose: benchmark evaluation on real datasets
-    |-- Default datasets: etth1, ettm1, weather, sp500
-    |-- Default mode: dev
-    |-- Default verbalizers: Template, LLM
-    |-- Default attribution method: shap
-    `-- Options: --dataset, --mode, --verbalizers, --attribution-method, --save-traces, --judge
-```
+**► Try the demo first:** [`notebooks/demo.ipynb`](notebooks/demo.ipynb) runs the full pipeline on three synthetic sales scenarios (growth, decline, volatile market) and shows forecast plots, covariate attribution, temporal saliency, the generated verbalization, and per-sentence NLI consistency scores — no dataset download required.
 
-## Commands
-
-```powershell
-python run_extensions.py ext1 evaluate
-python run_extensions.py ext1 evaluate --dataset etth1
-python run_extensions.py ext1 evaluate --dataset etth1 ettm1 weather sp500
-python run_extensions.py ext1 evaluate --mode dev
-python run_extensions.py ext1 evaluate --mode full
-python run_extensions.py ext1 evaluate --verbalizers template
-python run_extensions.py ext1 evaluate --verbalizers template llm
-python run_extensions.py ext1 evaluate --attribution-method shap
-python run_extensions.py ext1 evaluate --attribution-method attention
-```
-
-Evaluation modes:
-
-| `--mode` | Windows | History length | Forecast horizon | Intended use |
-|---|---:|---:|---:|---|
-| `dev` | 5 | 512 | 96 | Fast hourly-series evaluation |
-| `paper` | 20 | 512 | 96 | Fuller hourly-series reporting |
-| `dev_daily` | 5 | 252 | 5 | Fast daily-series evaluation |
-| `paper_daily` | 20 | 252 | 30 | Fuller daily-series reporting |
-
-Outputs are saved under:
-
-```text
-results/extension_1/
-├── evaluation_results.csv
-├── results_ETTh1.csv
-├── results_ETTm1.csv
-├── results_Weather.csv
-├── results_SP500.csv
-├── evaluation_plots.png
-└── evaluation_report.md
-```
-
-## CLI Options
-
-| Option | Values | Default | Used by |
-|---|---|---|---|
-| `action` | `evaluate` | required | all |
-| `--dataset` | `etth1`, `ettm1`, `weather`, `sp500` | all datasets | `evaluate` |
-| `--mode` | `dev`, `full` | `dev` | `evaluate` |
-| `--verbalizers` | `template`, `llm` | both | `evaluate` |
-| `--attribution-method` | `shap`, `attention` | `shap` | `evaluate` |
-
-## Notes
-
-- Both past and future covariates are required per window; windows where either cannot be extracted are skipped.
-- `--seed` is not exposed through the CLI; the default seed `42` is used.
+**Benchmark evaluation:** [`notebooks/run_evaluation.ipynb`](notebooks/run_evaluation.ipynb) runs the full evaluation on real datasets (Seattle Weather, ETTh1, ETTm1, S&P 500) and produces CSV results, summary plots, and a markdown report.

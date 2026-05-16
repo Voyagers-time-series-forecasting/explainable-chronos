@@ -24,6 +24,7 @@ from extension_1.config import select_llm_model
 from extension_1.verbalization.types import VerbalizationResult
 from extension_1.attribution.types import AttributionResult
 from extension_1.features.extractor import ForecastFeatures
+from extension_1.verbalization.trajectory import verbalize_temporal_focus, verbalize_trajectory
 from extension_1.verbalization.template import TemplateVerbalizer
 
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ class LLMVerbalizer:
         ]
         if attribution:
             for attr in attribution.attributions[: attribution.top_k]:
-                verb = "increases" if attr.direction == "positive" else "decreases"
+                verb = "increases"
                 triples.append((
                     f"{attr.name}_covariate",
                     f"{verb}_forecast_by",
@@ -216,12 +217,24 @@ class LLMVerbalizer:
         facts = "\n".join(
             f"  {k}: {v}"
             for k, v in features.to_dict().items()
-            if k != "threshold_breaches"
+            if k not in ("threshold_breaches", "trajectory", "trajectory_sentence")
         )
         triples_str = "; ".join(
             f"{s} {p} {o}"
             for s, p, o in self.build_grounding_triples(features, attribution)
         )
+
+        traj_line = ""
+        if features.trajectory:
+            traj_sentence, _ = verbalize_trajectory(features.trajectory)
+            traj_line = f"TRAJECTORY: {traj_sentence}\n"
+
+        temporal_line = ""
+        if attribution and attribution.temporal:
+            history_length = len(attribution.temporal[0].saliency)
+            tpf_sentence, _ = verbalize_temporal_focus(attribution.temporal, history_length)
+            if tpf_sentence:
+                temporal_line = f"TEMPORAL_FOCUS: {tpf_sentence}\n"
 
         return (
             "Rewrite the DRAFT below into fluent professional prose. "
@@ -232,7 +245,9 @@ class LLMVerbalizer:
             "## Now rewrite the following\n"
             "CONSTRAINT: Be extremely concise. Do not add any extra commentary.\n"
             f"NUMERICAL FACTS: {facts}\n"
-            f"GROUNDING: {triples_str}\n\n"
-            f"DRAFT: {template_result.summary}\n"
+            f"GROUNDING: {triples_str}\n"
+            f"{traj_line}"
+            f"{temporal_line}"
+            f"\nDRAFT: {template_result.summary}\n"
             "REWRITE:"
         )
