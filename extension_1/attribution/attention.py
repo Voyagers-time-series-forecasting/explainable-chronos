@@ -228,12 +228,12 @@ class AttentionAttributor:
         at each patch index the series attend to each other. Averaging over patches
         yields one (Series, Series) matrix per layer before rollout.
 
-        Paper §3 — residual adjustment:
+        Residual adjustment:
             A = 0.5 · W_att + 0.5 · I
         Implemented as (avg + I) row-normalized, which is algebraically equivalent
         since both avg and I have rows summing to 1 (sum = 2, divide by 2 = 0.5 each).
 
-        Paper §4 — rollout recursion:
+        Rollout recursion:
             Ã(lᵢ) = A(lᵢ) · Ã(lᵢ₋₁)   (new layer left-multiplied)
         So Ã(L) = A(L) · … · A(1), and Ã[0, c] gives how much covariate c's input
         contributed to the target's output representation.

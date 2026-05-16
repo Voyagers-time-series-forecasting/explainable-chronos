@@ -22,7 +22,7 @@
 
 \begin{document}
 
-\title{Explainable Chronos: A Post-Hoc Framework for Faithful Verbalization and Interactive Querying of Probabilistic Time-Series Forecasts}
+\title{Explainable Chronos: A Framework for Verbalization and Interactive Querying of Probabilistic Time-Series Forecasts}
 
 \author{
 \IEEEauthorblockN{[Author~1],
@@ -49,8 +49,7 @@ Course: 01VIXSM --- Deep Natural Language Processing, A.Y.\ 2025--2026\\
 \section{Introduction}
 % =====================================================================
 
-Probabilistic time-series forecasting models such as Chronos-2~\cite{chronos2} produce quantile predictions (P10, P50, P90) that encode rich information about expected trends, uncertainty, and tail risks.
-However, these numerical outputs are difficult for non-expert stakeholders to interpret: a vector of quantile values communicates nothing intuitively about \emph{why} a forecast was generated, how confident the model is, or what role each input covariate played in shaping the prediction.
+Probabilistic time-series forecasting models such as Chronos-2~\cite{chronos2} produce quantile predictions that encode rich information about expected trends, uncertainty, and tail risks. However, these numerical outputs are difficult for non-expert stakeholders to interpret: a vector of quantile values communicates nothing intuitively about \emph{why} a forecast was generated, how confident the model is, or what role each input covariate played in shaping the prediction.
 This gap between model output and human understanding is precisely what our work is trying to fill.
 
 \vspace{2mm}
@@ -61,7 +60,6 @@ Our project addresses this gap by building a modular NLP framework that sits ent
 
 Extension 1 addresses two complementary challenges: generating natural-language summaries that faithfully describe the content of quantile forecasts, and automatically verifying whether the generated text is consistent with the underlying numerical evidence.
 We frame the verification task as a Natural Language Inference (NLI) problem~\cite{bowman2015snli,williams2018mnli}, where a structured rendering of the numerical features serves as the \emph{premise} and each verbalized sentence serves as the \emph{hypothesis}.
-Our discourse planning stage draws on Rhetorical Structure Theory (RST)~\cite{mann1988rst}, using rhetorically motivated relations to organize the generated content into coherent multi-sentence summaries.
 
 % =====================================================================
 \section{Problem Statement}
@@ -70,7 +68,7 @@ Our discourse planning stage draws on Rhetorical Structure Theory (RST)~\cite{ma
 \subsection{Extension 1}
 
 \textbf{Input.}
-A historical time series $\mathbf{x} = (x_1, \dots, x_T) \in \mathbb{R}^T$ and, optionally, a matrix of past covariates $\mathbf{Z} \in \mathbb{R}^{T \times C}$ with $C$ named covariates.
+A historical time series $\mathbf{x} = (x_1, \dots, x_T) \in \mathbb{R}^T$ with a matrix of covariates $\mathbf{Z} \in \mathbb{R}^{T \times C}$ with $C$ named covariates.
 
 \vspace{2mm}
 
@@ -89,7 +87,9 @@ produce a natural-language summary $\mathcal{S} = (s_1, \dots, s_K)$ such that e
 A verbalization result comprising:
 (a) the paragraph-level summary $\mathcal{S}$;
 (b) per-sentence grounding metadata mapping each $s_k$ to the numerical features that generated it;
-(c) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent.
+(c) a covariate attribution result containing top-$k$ importance scores derived via Attention Rollout~\cite{abnar2020attentionflow} and per-covariate temporal saliency over the history window;
+(d) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent;
+(e) two deterministic text-quality scores: \emph{fact recall} (fraction of key numerical claims reproduced in the text) and \emph{feature completeness} (fraction of expected feature categories covered).
 
 
 % =====================================================================
@@ -98,120 +98,73 @@ A verbalization result comprising:
 
 \subsection{Extension 1}
 
-The pipeline consists of four sequential stages: forecast and feature extraction (Stage A), optional covariate attribution (Stage B), verbalization (Stage C), and NLI consistency scoring (Stage D).
+The pipeline consists of four sequential stages: forecast and feature extraction (Stage A), covariate attribution (Stage B), verbalization (Stage C), and NLI consistency scoring (Stage D).
 
 
-\subsection{Stage A: Forecast and Feature Extraction}
+\subsubsection*{Stage A: Forecast and Feature Extraction}
 
-The Chronos-2 model produces probabilistic forecasts from which we extract quantiles P10, P50, and P90. All subsequent feature extraction uses only NumPy and SciPy.
+From the Chronos-2 quantile output (P10, P50, P90) we derive seven interpretable feature groups using NumPy and SciPy:
 
-\vspace{2mm}
+\begin{itemize}
+  \item \textbf{Trend}: direction and magnitude of the median forecast.
+  \item \textbf{Uncertainty}: level and evolution of the prediction interval width.
+  \item \textbf{Asymmetry}: whether the interval skews above or below the median.
+  \item \textbf{Tail risks}: binary flags for significant downside or upside extremes.
+  \item \textbf{Regime shift}: statistical detection of a mean-level break at the forecast midpoint.
+  \item \textbf{Threshold breaches}: step-level violations of user-configurable domain thresholds.
+  \item \textbf{Trajectory narration}: segmentation of the P50 curve into monotone phases with turning points.
+\end{itemize}
 
-\textbf{Trend direction and magnitude.}
-A linear fit $\hat{y}^{(0.5)}_t = \alpha + \beta\, t$ yields the slope $\beta$.
-The normalized slope is computed as $\bar{\beta} = \beta \,/\, \overline{|P50|}$.
-Magnitude is classified using two thresholds: $|\bar{\beta}| > 0.05 \Rightarrow$ \emph{sharply}, $|\bar{\beta}| > 0.02 \Rightarrow$ \emph{moderately}, otherwise \emph{slightly}.
-Direction is \emph{flat} when $|\bar{\beta}| \leq 0.02$, \emph{rising} when $\bar{\beta} > 0.02$, and \emph{falling} otherwise.
 
-\vspace{2mm}
-
-\textbf{Uncertainty profile.}
-The prediction interval width $w_t = \hat{y}^{(0.9)}_t - \hat{y}^{(0.1)}_t$ yields relative uncertainty $\bar{w} = \overline{w}\,/\,\overline{|P50|}$, classified as \emph{high} ($\bar{w} > 0.30$), \emph{moderate} ($\bar{w} > 0.10$), or \emph{low}.
-A linear fit to $w_t$ determines whether intervals are \emph{widening} (slope $ > 0.01$), \emph{narrowing} (slope $ < -0.01$), or \emph{stable}.
-
-\vspace{2mm}
-
-\textbf{Interval asymmetry.}
-We compute:
-%
-\begin{equation}
-  A = \frac{\overline{(P90 - P50) - (P50 - P10)}}{\overline{w}},
-\end{equation}
-%
-labelling as \emph{symmetric} ($|A| < 0.10$), \emph{right-skewed} ($A > 0$), or \emph{left-skewed}.
-
-\vspace{2mm}
-
-\textbf{Tail risk flags.}
-Downside risk is flagged when $\min(P10) < x_T \cdot 0.80$; upside potential when $\max(P90) > x_T \cdot 1.20$.
-
-\vspace{2mm}
-
-\textbf{Regime-shift detection.}
-A Welch $t$-test compares the first and second halves of the P50 forecast; a $p$-value below $0.05$ flags a structural break.
 
 
 % ----- 4.2 -----
-\subsection{Stage B: Covariate Attribution}
+\subsubsection*{Stage B: Covariate Attribution}
 
-When covariates are available, the pipeline can attach attribution metadata to the verbalized forecast.
-We support two post-hoc attribution methods: a surrogate-model SHAP explainer and an attention-rollout explainer.
-Both methods return a ranked list of covariates with relative impact scores, and the top-$k$ attributions (default $k=5$) are passed to the verbalizer to generate attribution-aware sentences.
+The pipeline computes covariate attribution scores via Attention Rollout~\cite{abnar2020attentionflow} and passes the top-$k$ results (default $k=5$) to the verbalizer.
 
-\vspace{2mm}
+\textbf{Method.}
+~\cite{abnar2020attentionflow} observes that raw per-layer attention weights become near-uniform in deep transformers, as each layer's output is a mixture of all previous representations.
+Attention Rollout addresses this by composing attention matrices across layers: at each layer the raw weights are averaged over heads, mixed with an identity term to account for residual connections ($A = 0.5 \cdot W_{\text{att}} + 0.5 \cdot I$), and left-multiplied into the accumulated product ($\tilde{A}(l_i) = A(l_i) \cdot \tilde{A}(l_{i-1})$).
+The final matrix $\tilde{A}$ approximates how information from each input position propagates to the output.
 
-\textbf{Surrogate model with SHAP.}
-The first method trains a surrogate XGBoost regressor~\cite{xgboost} to approximate the local mapping from covariate history to the P50 forecast level.
-Rolling windows over the covariate history produce multiple training rows with per-covariate aggregate features: mean, standard deviation, last value, minimum, and maximum.
-After fitting the surrogate, SHAP TreeExplainer is used to estimate feature contributions according to the Shapley-value framework of Lundberg and Lee~\cite{shap}.
-The five aggregate-feature attributions belonging to the same covariate are summed by absolute value, yielding one importance score per covariate.
-This method is model-agnostic with respect to Chronos-2: it explains the surrogate approximation of the forecast behavior rather than the internal transformer computation directly.
-
-\vspace{2mm}
-
-\textbf{Attention Rollout.}
-The second method uses attention weights extracted from Chronos-2 and aggregates them using Attention Rollout, following Abnar and Zuidema's method for quantifying attention flow in Transformers~\cite{abnar2020attentionflow}.
-For each transformer layer, attention matrices are averaged across heads, augmented with an identity connection to account for residual paths, row-normalized, and then multiplied across layers.
-The resulting rollout matrix approximates how information flows through stacked self-attention layers.
-We aggregate this rollout attention over the token positions associated with each covariate and normalize the resulting scores into relative covariate impacts.
-Unlike the SHAP surrogate, this method uses internal attention signals from the forecasting model, but its interpretation depends on how Chronos-2 represents covariates in the input sequence.
+\textbf{Adaptation to Chronos-2.}
+Chronos-2 alternates two attention axes per transformer block: \emph{group attention}, which attends across the target and covariate series at each patch position, and \emph{time attention}, which attends across patches within each series independently.
+For \emph{covariate importance}, rollout is applied to the group-attention layers; the per-patch matrices are averaged before composition, and row~0 of $\tilde{A}$ gives the target's attribution to each covariate.
+For \emph{temporal saliency}, we ask a complementary question: \emph{which history time steps did each covariate attend to most?}
+The same rollout formula is applied independently per covariate to the time-attention layers, producing a normalised distribution over history patches that is interpolated back to the original time steps.
+The result is a per-covariate saliency curve, from which we extract the peak step (most attended history moment) and the focus breadth (normalised entropy, measuring how concentrated or diffuse the attention is).
 
 
 % ----- 4.3 -----
-\subsection{Stage C: Verbalization}
+\subsubsection*{Stage C: Verbalization}
 
 We implement two complementary approaches.
 
+\textbf{Template Verbalizer.}
+The verbalizer produces a summary in two layers.
+The \emph{base layer} always generates one sentence per active feature group: a trend sentence, a trajectory sentence, an uncertainty sentence and conditional risk sentences.
+The \emph{rhetorical layer} then adds RST-structured sentences~\cite{mann1988rst} conditioned on feature combinations: \textsc{Concession} (rising trend with downside risk), \textsc{Contrast} (non-flat trend with high uncertainty), \textsc{Elaboration} (regime shift with $p$-value), and \textsc{Cause} (top covariate attribution $>20\%$).
+Each sentence is paired with a grounding dictionary recording the numerical features that generated it.
 
-\vspace{2mm}
+\textbf{LLM Verbalizer.}
+The template output serves as a refinement draft for a local LLM.
+The prompt is structured as few-shot in-context learning: three worked DRAFT$\to$REWRITE examples are prepended, followed by the actual input consisting of (i)~numerical features, (ii)~grounding triples of the form (\emph{subject}, \emph{predicate}, \emph{object}), (iii)~the template draft, and (iv)~constraints forbidding causal claims, domain-specific speculation, and changes to numerical values.
+Greedy decoding is used to maximise factual fidelity.
+Because the LLM may freely reorganize content across sentences, each output sentence is mapped to a \emph{combined} grounding aggregating all template feature groundings.
 
-\textbf{Approach~A --- Template Verbalizer.}
-An RST-based sentence planner uses phrase-variant dictionaries and a \texttt{DiscoursePlanner} module.
-The planner inspects the extracted features and optional attributions to select rhetorical relations.
-Five relation types are supported:
-
-\begin{itemize}
-\item \textsc{Elaboration}: activated when a regime shift is detected, providing the $p$-value detail.
-\item \textsc{Cause}: activated when the top attributed covariate contributes $>20\%$, expressing the driver.
-\item \textsc{Contrast}: activated when (a)~a non-flat trend co-occurs with high uncertainty, or (b)~the top two covariates have opposing directions with the second contributing $>15\%$.
-\item \textsc{Concession}: activated when a rising trend co-occurs with downside risk.
-\item \textsc{Sequence}: reserved for multi-phase forecasts.
-\end{itemize}
-
-Each sentence is paired with a grounding dictionary that records the exact numerical features (type, values, labels) from which it was generated.
-Phrase variants are sampled from pre-defined dictionaries using a seeded random generator for reproducibility.
-
-\textbf{Approach B --- LLM Verbalizer.}
-The template output serves as a draft for a local LLM.
-The LLM receives: (i) the numerical features, (ii) structured grounding triples of the form (subject, predicate, object), (iii) the template draft summary, and (iv) strict NLI-oriented constraints forbidding causal language, domain-specific speculation, and mathematical reasoning.
-Two LLM variants are evaluated:
-\emph{LLM~Guided} receives both the template draft and grounding triples;
-\emph{LLM~Raw} receives only the numerical features and grounding triples, without any template draft. For both LLM variants, each generated sentence is mapped to a \emph{combined} grounding that aggregates all feature groundings from the template result, since the LLM may freely reorganize information across sentences.
 
 
 % ----- 4.4 -----
-\subsection{Stage D: NLI Consistency Scoring}
+\subsubsection*{Stage D: NLI Consistency Scoring}
 
-For each sentence $s_k$ in the verbalization, a \emph{premise} $\pi_k$ is rendered from its grounding dictionary into unambiguous English.
-The rendering is type-specific: trend groundings produce statements about slope values and classifications; uncertainty groundings produce statements about interval widths and relative uncertainty; attribution groundings produce statements about SHAP values and directional effects.
-
-The NLI model \texttt{facebook/bart-large-mnli}~\cite{lewis2020bart} is used via the HuggingFace zero-shot-classification pipeline to estimate:
+For each sentence $s_k$ in the verbalization, a \emph{premise} $\pi_k$ is rendered from its grounding dictionary. A NLI model is used to estimate:
 %
 \begin{equation}
   P(\text{entail} \mid \pi_k,\, s_k).
 \end{equation}
 %
-The overall consistency score for summary $\mathcal{S}$ is the arithmetic mean:
+The overall consistency score for summary $\mathcal{S}$ is the arithmetic mean over all $K$ sentences:
 %
 \begin{equation}
   \text{Score}(\mathcal{S}) = \frac{1}{K} \sum_{k=1}^{K} P(\text{entail} \mid \pi_k,\, s_k).
@@ -224,110 +177,74 @@ A summary is deemed \emph{consistent} when $\text{Score}(\mathcal{S}) \geq 0.70$
 \section{Evaluation Protocol}
 % =====================================================================
 
-Following the recommendation to distinguish between two types of ground truth, our evaluation protocol cleanly separates two orthogonal questions: (1)~\emph{Is the forecast itself accurate?} and (2)~\emph{Is the explanation faithful to what the model actually predicted?}
-A high-scoring explanation of an inaccurate forecast is still a correct explanation; conversely, a fluent but hallucinated summary of an accurate forecast is a faithfulness failure.
+\subsection{Extension 1}
 
+Our protocol separates two orthogonal questions: (1)~\emph{Is the forecast accurate?} and (2)~\emph{Is the verbalization a faithful and complete description of what the model predicted?}
 
 % ----- 5.1 -----
-\subsection{Ground Truth 1: Forecast Accuracy}
+\subsubsection{Forecast Accuracy}
 
-This axis evaluates the Chronos-2 model against observed actuals and is independent of the verbalization pipeline.
+Evaluated against observed actuals, independently of the verbalization pipeline.
 
-\textbf{MASE (Mean Absolute Scaled Error).}
-Defined as the ratio of the forecast's mean absolute error to that of a na\"ive seasonal baseline:
-%
-\begin{equation}
-  \text{MASE} = \frac{\frac{1}{H}\sum_{t=1}^{H} |y_t - \hat{y}^{(0.5)}_t|}{\frac{1}{T-1}\sum_{t=2}^{T} |x_t - x_{t-1}|}.
-\end{equation}
-%
-A MASE below~1 indicates that the model outperforms the na\"ive baseline.
-
-\textbf{Prediction Interval Coverage (\%).}
-The percentage of actual future values that fall within the P10--P90 prediction interval:
-%
-\begin{equation}
-  \text{Coverage} = \frac{100}{H} \sum_{t=1}^{H} \mathbf{1}\bigl[\hat{y}^{(0.1)}_t \leq y_t \leq \hat{y}^{(0.9)}_t\bigr].
-\end{equation}
-%
-For well-calibrated 80\% prediction intervals, the expected coverage is 80\%.
-
-\textbf{Interval Sharpness.}
-The mean interval width normalized by the range of the actual values:
-%
-\begin{equation}
-  \text{Sharpness} = \frac{\overline{\hat{y}^{(0.9)} - \hat{y}^{(0.1)}}}{\max(\mathbf{y}) - \min(\mathbf{y})}.
-\end{equation}
-%
-Lower sharpness indicates tighter, more informative intervals (desirable when coverage is maintained).
-
+\begin{itemize}
+  \item \textbf{MASE}: ratio of P50 MAE to a na\"ive one-step baseline (history differences);
+  \item \textbf{Coverage}: fraction of actuals falling inside the P10--P90 interval;
+\end{itemize}
 
 % ----- 5.2 -----
-\subsection{Ground Truth 2: Explanation Faithfulness}
+\subsubsection{ Verbalization Quality}
 
-This axis evaluates whether the generated text accurately describes what the model predicted, regardless of whether the prediction itself was correct.
+Evaluated against the model's own numerical output, not against actuals.
+Metrics are organised along three axes:
 
-\textbf{Per-Sentence NLI Entailment Score.}
-For each sentence $s_k$, the entailment probability $P(\text{entail} \mid \pi_k, s_k) \in [0,1]$ measures how strongly the NLI model judges the sentence to be supported by its numerical premise.
-Scores near~1 indicate strong factual grounding; scores below~0.5 suggest the sentence introduces claims not entailed by the data.
+\textit{Faithfulness: Does the text accurately describe the forecast?}
+\begin{itemize}
+  \item \textbf{Per-sentence NLI score}: entailment probability from the NLI model; the mean over all sentences defines the overall consistency score ($\geq 0.70$ = pass).
+  \item \textbf{Fact recall}: fraction of key numerical values (horizon, attribution percentages, trajectory change). 
+\end{itemize}
 
-\textbf{Overall Consistency Score.}
-The arithmetic mean of per-sentence entailment probabilities across all $K$ sentences.
-A threshold of $0.70$ defines the binary pass/fail boundary.
+\textit{Usefulness: Would a human prefer this?}
+\begin{itemize}
+  \item \textbf{LLM-as-a-Judge}: a local LLM performs all $\binom{V}{2}$ pairwise comparisons per scenario, assigning human-preference scores in $[1,5]$ and declaring a winner or tie ($|\Delta| \leq 1$).
+\end{itemize}
 
-\textbf{Quantile Round-Trip Check.}
-An exact-match verification that re-derives all feature labels (trend direction, magnitude, uncertainty level) directly from the raw P10/P50/P90 arrays and compares them against the labels used during verbalization.
-Any mismatch is recorded as a \emph{faithfulness error}, indicating a bug in the feature extraction logic.
-This metric is binary per-scenario: zero mismatches (pass) or at least one (fail).
-
-
-% ----- 5.3 -----
-\subsection{Illustrative Success and Failure Cases}
-
-To provide concrete intuition for the metrics, we describe representative cases from preliminary experiments on synthetic data.
-
-\textbf{Success case (Template verbalizer, trending scenario).}
-The template generates: \emph{``The forecast indicates that values are expected to remain relatively stable over the next 7 periods.''}
-The NLI premise reads: \emph{``The median forecast slope is +0.0825 per period. The normalised slope is +0.0010. The trend is classified as slightly flat.''}
-The NLI model assigns an entailment probability of~0.999, because the sentence's ``relatively stable'' directly mirrors the ``slightly flat'' classification.
-
-\textbf{Failure case (LLM Raw verbalizer, flat scenario).}
-The LLM generates: \emph{``The financial performance has been consistent but not exceptionally strong or weak, indicating potential risks associated with current market conditions.''}
-The NLI premise contains only slope values and classification labels---no mention of ``financial performance'' or ``market conditions.''
-The NLI model assigns an entailment probability of~0.14, correctly flagging the hallucinated domain-specific content.
-
-\textbf{Failure case (Template verbalizer, regime-shift premise).}
-The template generates: \emph{``Additionally, a structural break is detected near the midpoint, indicating a potential change in the underlying pattern (p=0.0131).''}
-The NLI premise reads: \emph{``A Welch t-test comparing the first and second halves yields a p-value of 0.0131, indicating a statistically significant mean shift.''}
-The entailment probability drops to~0.011 because the NLI model struggles to link ``structural break'' with ``statistically significant mean shift''---a known lexical sensitivity of NLI models.
-
+\textit{Completeness: Are all key features mentioned?}
+\begin{itemize}
+  \item \textbf{Feature completeness}: fraction of expected feature categories (trend, uncertainty, attribution, risk, regime shift) covered by at least one keyword in the text.
+\end{itemize}
 
 % =====================================================================
 \section{Experiments}
 % =====================================================================
 
-% ----- 6.1 -----
-\subsection{Data Description}
+\subsection{Extension 1}
 
-We evaluate on four real-world time-series datasets: ETTh1, ETTm1, Seattle Weather, and S\&P 500.
-These datasets provide observed actuals against which both forecast accuracy and explanation faithfulness can be assessed, and they include covariates for evaluating attribution-aware verbalization.
+% ----- 6.1 -----
+\subsubsection{Data}
+
+We evaluate on the Seattle Weather dataset.
+The forecast target is daily maximum temperature (\texttt{temp\_max}), with three meteorological covariates: minimum temperature (\texttt{temp\_min}), precipitation (\texttt{precipitation}), and wind speed (\texttt{wind}).
 
 % ----- 6.2 -----
-\subsection{Experimental Design}
+\subsubsection{Experimental Setup}
 
-\textbf{Hardware.} CPU-only execution (experiments in progress).
+\textbf{Hardware.} NVIDIA A100 GPU via Google Colab.
 
-\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small, \texttt{autogluon/chronos-2-small}); \texttt{transformers} (BART-large-MNLI for NLI, Qwen1.5-1.8B-Chat for LLM verbalization); \texttt{xgboost} (surrogate model); \texttt{shap} (TreeExplainer); NumPy, SciPy, pandas, matplotlib.
+\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small~\cite{chronos2}); \texttt{transformers} (BART-large-MNLI~\cite{lewis2020bart} for NLI, Qwen2.5-7B-Instruct~\cite{qwen} for LLM verbalization)
 
 \textbf{Validation method.}
-The dual evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage, sharpness) are computed against observed actuals; explanation faithfulness metrics (NLI consistency, round-trip check) are computed against the model's own numerical features.
+The evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage) are computed against observed actuals; verbalization quality metrics (NLI consistency, fact recall, feature completeness) are computed against the model's own numerical features; holistic explanation quality is assessed via pairwise LLM-as-a-judge comparisons.
 
-\textbf{Planned comparisons.}
-Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across the selected real-world datasets, with and without covariate attribution.
+\textbf{Windowing.}
+We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps and a forecast horizon of 96 steps. Windows are positioned at evenly spaced starting points within the test split.
+
+\textbf{Comparisons.}
+Two verbalizer types (Template, LLM) are compared across all 200 scenarios per dataset.
 
 % ----- 6.3 -----
-\subsection{Results}
+\subsubsection{Results}
 
-\emph{Results will be reported after completion of the M5 experiments.}
+\emph{Results will be reported after completion of the experiments.}
 
 
 % =====================================================================
@@ -340,7 +257,7 @@ Three verbalizer types (Template, LLM~Guided, LLM~Raw) are compared across the s
 % =====================================================================
 % REFERENCES
 % =====================================================================
-\begin{thebibliography}{14}
+\begin{thebibliography}{7}
 
 \bibitem{chronos2}
 A.~F.~Ansari, L.~Stella, C.~Turkmen, et~al.,
@@ -357,61 +274,49 @@ A.~Williams, N.~Nangia, and S.~R.~Bowman,
 ``A broad-coverage challenge corpus for sentence understanding through inference,''
 in \textit{Proc.\ NAACL-HLT}, 2018, pp.~1112--1122.
 
-\bibitem{lewis2020bart}
-M.~Lewis, Y.~Liu, N.~Goyal, et~al.,
-``BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension,''
-in \textit{Proc.\ ACL}, 2020, pp.~7871--7880.
-
-\bibitem{dusek2020evaluating}
-O.~Du\v{s}ek and Z.~Kasner,
-``Evaluating Semantic Accuracy of Data-to-Text Generation with Natural Language Inference,''
-in \textit{Proc.\ INLG}, 2020, pp.~131--137.
-
-\bibitem{kryscinski2020evaluating}
-W.~Kry\'{s}ci\'{n}ski, B.~McCann, C.~Xiong, and R.~Socher,
-``Evaluating the factual consistency of abstractive text summarization,''
-in \textit{Proc.\ EMNLP}, 2020, pp.~9332--9346.
+\bibitem{abnar2020attentionflow}
+S.~Abnar and W.~Zuidema,
+``Quantifying Attention Flow in Transformers,''
+in \textit{Proc.\ ACL}, 2020, pp.~4190--4197.
 
 \bibitem{mann1988rst}
 W.~C.~Mann and S.~A.~Thompson,
 ``Rhetorical Structure Theory: Toward a functional theory of text organization,''
 \textit{Text}, vol.~8, no.~3, pp.~243--281, 1988.
 
-\bibitem{taboada2006applications}
-M.~Taboada and W.~C.~Mann,
-``Applications of Rhetorical Structure Theory,''
-\textit{Discourse Studies}, vol.~8, no.~4, pp.~567--588, 2006.
-
-\bibitem{hovy1993automated}
-E.~H.~Hovy,
-``Automated discourse generation using discourse structure relations,''
-\textit{Artificial Intelligence}, vol.~63, no.~1--2, pp.~341--385, 1993.
-
-\bibitem{rosner1992customizing}
-D.~R\"{o}sner and M.~Stede,
-``Customizing RST for the automatic production of technical manuals,''
-in \textit{Aspects of Automated Natural Language Generation} (LNAI~587), Springer, 1992, pp.~199--214.
-
-\bibitem{shap}
-S.~M.~Lundberg and S.-I.~Lee,
-``A Unified Approach to Interpreting Model Predictions,''
-in \textit{Proc.\ NeurIPS}, 2017, pp.~4765--4774.
-
-\bibitem{xgboost}
-T.~Chen and C.~Guestrin,
-``XGBoost: A Scalable Tree Boosting System,''
-in \textit{Proc.\ KDD}, 2016, pp.~785--794.
-
-\bibitem{abnar2020attentionflow}
-S.~Abnar and W.~Zuidema,
-``Quantifying Attention Flow in Transformers,''
-in \textit{Proc.\ ACL}, 2020, pp.~4190--4197.
+\bibitem{lewis2020bart}
+M.~Lewis, Y.~Liu, N.~Goyal, et~al.,
+``BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension,''
+in \textit{Proc.\ ACL}, 2020, pp.~7871--7880.
 
 \bibitem{qwen}
-J.~Bai, S.~Bai, Y.~Chu, et~al.,
-``Qwen Technical Report,''
-\textit{arXiv preprint arXiv:2309.16609}, 2023.
+Qwen Team,
+``Qwen2.5 Technical Report,''
+\textit{arXiv preprint arXiv:2412.15115}, 2024.
 
 \end{thebibliography}
+
+% =====================================================================
+\appendix
+% =====================================================================
+
+\section{Illustrative Success and Failure Cases}
+
+The following cases provide concrete intuition for the NLI scoring metric using examples from preliminary experiments on synthetic data.
+
+\textbf{Success case (Template verbalizer, trending scenario).}
+The template generates: \emph{``The forecast indicates that values are expected to remain relatively stable over the next 7 periods.''}
+The NLI premise reads: \emph{``The median forecast slope is +0.0825 per period. The normalised slope is +0.0010. The trend is classified as slightly flat.''}
+The NLI model assigns an entailment probability of~0.999, because the sentence's ``relatively stable'' directly mirrors the ``slightly flat'' classification.
+
+\textbf{Failure case (LLM verbalizer, flat scenario).}
+The LLM generates: \emph{``The financial performance has been consistent but not exceptionally strong or weak, indicating potential risks associated with current market conditions.''}
+The NLI premise contains only slope values and classification labels---no mention of ``financial performance'' or ``market conditions.''
+The NLI model assigns an entailment probability of~0.14, correctly flagging the hallucinated domain-specific content.
+
+\textbf{Failure case (Template verbalizer, regime-shift premise).}
+The template generates: \emph{``Additionally, a structural break is detected near the midpoint, indicating a potential change in the underlying pattern (p=0.0131).''}
+The NLI premise reads: \emph{``A Welch t-test comparing the first and second halves yields a p-value of 0.0131, indicating a statistically significant mean shift.''}
+The entailment probability drops to~0.011 because the NLI model struggles to link ``structural break'' with ``statistically significant mean shift''---a known lexical sensitivity of NLI models.
 
 \end{document}
