@@ -205,7 +205,7 @@ Metrics are organised along three axes:
 
 \textit{b) Usefulness: Would a human prefer this?}
 \begin{itemize}
-  \item \textbf{LLM-as-a-Judge}: a local LLM performs all $\binom{V}{2}$ pairwise comparisons per scenario, assigning human-preference scores in $[1,5]$ and declaring a winner or tie ($|\Delta| \leq 1$).
+  \item \textbf{LLM-as-a-Judge}: a local LLM performs all $\binom{V}{2}$ pairwise comparisons per scenario, assigning human-preference scores in $[1,5]$ and declaring a winner or tie.
 \end{itemize}
 
 \textit{c) Completeness: Are all key features mentioned?}
@@ -239,7 +239,7 @@ The evaluation protocol from Section~V is applied: forecast accuracy metrics (MA
 We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps and a forecast horizon of 96 steps. Windows are positioned at evenly spaced starting points within the test split.
 
 \textbf{Comparisons.}
-The two verbalizer types (Template, LLM) are compared across all 200 scenarios per dataset.
+The two verbalizer types (Template, LLM) are compared across all 200 scenarios.
 
 % ----- 6.3 -----
 \subsubsection{Results}

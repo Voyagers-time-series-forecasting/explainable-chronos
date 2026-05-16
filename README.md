@@ -19,7 +19,8 @@ explainable-chronos/
 ├── run_extensions.py          # CLI entry point
 ├── requirements.txt
 ├── notebooks/
-│   └── run_evaluation.ipynb   # Interactive evaluation notebook (Colab-ready)
+│   ├── demo.ipynb             # Framework demo — three synthetic scenarios with visualisations
+│   └── run_evaluation.ipynb   # Full benchmark evaluation (Colab-ready)
 ├── shared/
 │   └── forecast_provider.py   # Chronos-2 inference wrapper
 ├── extension_1/
@@ -44,6 +45,8 @@ explainable-chronos/
     └── extension_1/           # All evaluation outputs
 ```
 
-## Reproducibility and Evaluation
+## Quick Start
 
-**Notebook (recommended for Colab):** open [`notebooks/run_evaluation.ipynb`](notebooks/run_evaluation.ipynb) to run the evaluation, inspect per-scenario traces, and produce the markdown evaluation report and plots.
+**► Try the demo first:** [`notebooks/demo.ipynb`](notebooks/demo.ipynb) runs the full pipeline on three synthetic sales scenarios (growth, decline, volatile market) and shows forecast plots, covariate attribution, temporal saliency, the generated verbalization, and per-sentence NLI consistency scores — no dataset download required.
+
+**Benchmark evaluation:** [`notebooks/run_evaluation.ipynb`](notebooks/run_evaluation.ipynb) runs the full evaluation on real datasets (Seattle Weather, ETTh1, ETTm1, S&P 500) and produces CSV results, summary plots, and a markdown report.
