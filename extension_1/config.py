@@ -43,11 +43,7 @@ REGIME_SHIFT_PVALUE: float = 0.05
 ASYMMETRY_THRESHOLD: float = 0.10  # |asym| < this → "symmetric"
 
 # ────────────────────── NLI consistency scorer ────────────────────────
-# cross-encoder/nli-deberta-v3-base is a discriminative cross-encoder
-# trained specifically for NLI. It handles semantic paraphrase better
-# than BART-large-MNLI (a generative model repurposed for classification).
-# Fall back to "facebook/bart-large-mnli" if this model is unavailable.
-NLI_MODEL_NAME: str = "cross-encoder/nli-deberta-v3-large"
+NLI_MODEL_NAME: str = "facebook/bart-large-mnli"
 CONSISTENCY_THRESHOLD: float = 0.70
 
 # NLI score decomposition weights (entailment + neutral + contradiction = 1)

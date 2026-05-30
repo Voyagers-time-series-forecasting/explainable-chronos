@@ -33,99 +33,62 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You are a quantitative analyst writing informative, professional forecast summaries. "
+    "You are a quantitative analyst writing concise, professional forecast summaries. "
     "You receive structured numerical facts about a time-series forecast and write a "
-    "clear, explanatory summary directly from those facts.\n\n"
+    "clear, fluent summary directly from those facts.\n\n"
     "ENTAILMENT RULE (critical):\n"
     "Every sentence you write will be verified by an NLI model that checks whether "
     "the numerical facts ENTAIL your sentence. To maximise entailment:\n"
     "  - Each sentence must be fully and directly supported by the stated facts.\n"
     "  - Use the exact direction words (rising/falling/flat), magnitude words "
     "(sharply/moderately/slightly), and numerical values given in the facts.\n"
+    "  - One sentence per feature (trend, uncertainty, risk, covariate). "
+    "Do not merge features that come from different fact groups.\n"
     "  - Do NOT add causal interpretations, domain knowledge, or any claim "
     "not directly stated in the facts. Such additions cannot be entailed and "
     "will be flagged as contradictions.\n"
-    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n\n"
-    "AUDIENCE RULE:\n"
-    "You are writing for a non-technical user — not a data scientist. "
-    "Avoid jargon. Use these plain-language equivalents:\n"
-    "  - 'median forecast' or 'P50'  →  'the central forecast' or 'the most likely outcome'\n"
-    "  - 'prediction interval'       →  'the forecast range' or 'the range of likely values'\n"
-    "  - 'P10 quantile'              →  'the lower end of the forecast range'\n"
-    "  - 'P90 quantile'              →  'the upper end of the forecast range'\n"
-    "  - 'covariate attribution'     →  'the factors driving the forecast'\n"
-    "  - 'regime shift'              →  'a notable change in the underlying pattern'\n"
-    "  - 'slope of +X per period'    →  'rising by X units per step' (keep the number)\n"
-    "Always keep exact numerical values — only the framing changes.\n\n"
-    "ATTRIBUTION RULE:\n"
-    "When covariate facts are provided, mention ALL of them — not just the top one. "
-    "For each factor state whether it pushes the forecast up or down and by how much (%). "
-    "Explain the relative distribution in plain terms: which factor has the most influence, "
-    "which are secondary, and whether they all push in the same direction or partially cancel. "
-    "This is the most important part of the explanation for the user.\n\n"
+    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n"
     "CONSTRAINTS:\n"
-    "  - 4 to 6 sentences. Prioritise being informative and clear over being brief.\n"
-    "  - Never change the sign or magnitude of a percentage."
+    "  - 3 to 5 sentences maximum. Be concise.\n"
+    "  - Never change the sign or magnitude of a covariate impact percentage."
 )
 
 # ---------------------------------------------------------------------------
-# Few-shot examples: FACTS → SUMMARY (no draft, plain language)
+# Few-shot examples: FACTS → SUMMARY (no draft)
 # ---------------------------------------------------------------------------
 
 _FEW_SHOT_BLOCK = """\
-## Example 1  [lead with factors, then forecast direction, then range, then risk]
+## Example 1  [lead with covariate, then trend, then uncertainty, then risk]
 FACTS:
   trend_direction: rising | trend_magnitude: sharply | trend_slope: +0.1842 | horizon: 96
   uncertainty_level: moderate | uncertainty_trend: stable
   downside_risk: false | upside_potential: true
   covariate: temperature | direction: positive | impact_pct: 45.2
-  covariate: humidity | direction: positive | impact_pct: 31.7
-  covariate: wind_speed | direction: negative | impact_pct: 23.1
-  attribution_summary: temperature (45.2% pos), humidity (31.7% pos), wind_speed (23.1% neg)
-SUMMARY: The main factors driving the forecast are temperature (pushing values up by 45.2%) \
-and humidity (pushing up by 31.7%), while wind_speed works in the opposite direction, \
-partially pulling values down by 23.1%. \
-As a result, the central forecast rises sharply over the next 96 steps, gaining about 0.1842 \
-units per step. \
-The range of likely values is moderately wide and stays stable throughout, \
-and the upper end of the forecast range signals meaningful room for further upside.
+SUMMARY: Temperature is the dominant positive driver, contributing 45.2% of the total attribution. \
+Over the next 96 periods the median forecast rises sharply, with a slope of +0.1842 per period. \
+Prediction intervals are moderately wide and remain stable throughout the horizon. \
+The P90 quantile signals meaningful upside potential.
 
-## Example 2  [lead with forecast direction and range, then factors]
+## Example 2  [lead with uncertainty/risk, then trend, no covariate]
 FACTS:
   trend_direction: falling | trend_magnitude: moderately | trend_slope: -0.0934 | horizon: 96
   uncertainty_level: high | uncertainty_trend: widening
   downside_risk: true | upside_potential: false
   regime_shift: true | regime_shift_pvalue: 0.0031
-  covariate: pressure | direction: negative | impact_pct: 52.4
-  covariate: cloud_cover | direction: negative | impact_pct: 30.1
-  covariate: dew_point | direction: positive | impact_pct: 17.5
-  attribution_summary: pressure (52.4% neg), cloud_cover (30.1% neg), dew_point (17.5% pos)
-SUMMARY: The central forecast falls moderately over the next 96 steps (losing about 0.0934 \
-units per step), and the range of likely values is wide and expanding — meaning uncertainty \
-is growing as we look further ahead. \
-The lower end of the forecast range dips more than 20% below current levels, signalling a \
-meaningful risk of a significant drop. \
-A notable change in the underlying pattern is detected around the midpoint of the forecast \
-(p = 0.0031), suggesting the dynamics may shift mid-horizon. \
-Looking at what is driving these outcomes: pressure is the dominant downward force at 52.4%, \
-reinforced by cloud_cover (30.1% downward); dew_point partially counteracts both with an \
-upward contribution of 17.5%.
+SUMMARY: Prediction intervals are wide and expanding over the 96-period horizon, reflecting rapidly growing uncertainty. \
+The P10 quantile flags significant downside risk, with lower bounds exceeding 20% below current levels. \
+Against this backdrop, the median forecast falls moderately (slope: −0.0934 per period). \
+A statistically significant structural break is detected near the forecast midpoint (p = 0.0031).
 
-## Example 3  [compact forecast summary, then factor breakdown]
+## Example 3  [compact form — trend and uncertainty merged, then covariate]
 FACTS:
   trend_direction: flat | trend_magnitude: slightly | trend_slope: +0.0021 | horizon: 96
   uncertainty_level: low | uncertainty_trend: narrowing
   downside_risk: false | upside_potential: false
   covariate: wind | direction: negative | impact_pct: 38.1
-  covariate: temp_min | direction: positive | impact_pct: 35.6
-  covariate: precipitation | direction: positive | impact_pct: 26.3
-  attribution_summary: wind (38.1% neg), temp_min (35.6% pos), precipitation (26.3% pos)
-SUMMARY: The central forecast stays essentially flat over the next 96 steps, \
-and the range of likely values is narrow and becoming tighter — indicating the model \
-is quite confident in this outcome. \
-Three factors are nearly balanced in their influence: wind pushes values down the most \
-(38.1%), while minimum temperature (35.6% upward) and precipitation (26.3% upward) \
-together almost cancel wind's effect out.
+SUMMARY: Over the next 96 periods, values are projected to remain essentially flat (slope: +0.0021), \
+with narrow and converging prediction intervals that indicate high forecast confidence. \
+Wind is the dominant negative driver, accounting for 38.1% of the total attribution.
 """
 
 
@@ -296,19 +259,12 @@ class LLMVerbalizer:
         ]
 
         if attribution and attribution.attributions:
-            attrs = attribution.attributions[: attribution.top_k]
-            for attr in attrs:
+            for attr in attribution.attributions[: attribution.top_k]:
                 fact_lines.append(
                     f"  covariate: {attr.name} | "
                     f"direction: {attr.direction} | "
                     f"impact_pct: {attr.relative_impact_pct:.1f}"
                 )
-            # Pre-formatted attribution summary so the model sees the full distribution at a glance
-            summary_parts = ", ".join(
-                f"{a.name} ({a.relative_impact_pct:.1f}% {a.direction})"
-                for a in attrs
-            )
-            fact_lines.append(f"  attribution_summary: {summary_parts}")
 
         facts_str = "\n".join(fact_lines)
         triples_str = "; ".join(

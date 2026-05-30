@@ -77,94 +77,6 @@ class ConsistencyReport:
     contradiction_rate: float = 0.0
 
 
-# ──────────── plain-language gloss for combined groundings ────────────
-
-_UNCERTAINTY_GLOSS: Dict[tuple, str] = {
-    ("high",     "widening"): "growing uncertainty that warrants caution",
-    ("high",     "stable"):   "persistently high uncertainty throughout the horizon",
-    ("high",     "narrowing"): "high but gradually decreasing uncertainty",
-    ("moderate", "widening"): "gradually increasing uncertainty",
-    ("moderate", "stable"):   "consistent, moderate uncertainty",
-    ("moderate", "narrowing"): "uncertainty that is moderating over time",
-    ("low",      "widening"): "low but slightly expanding uncertainty",
-    ("low",      "stable"):   "high forecast confidence throughout the horizon",
-    ("low",      "narrowing"): "high and growing forecast confidence",
-}
-
-
-def _plain_language_gloss(groundings: List[Dict[str, Any]]) -> str:
-    """Generate plain-language paraphrases for a list of grounding dicts.
-
-    Used to enrich the 'combined' premise so that the NLI model can
-    match non-technical LLM output against technical numerical premises.
-    Each gloss is a single sentence phrased the way the LLM verbalizer
-    writes, making cross-attention entailment checks more accurate.
-    """
-    parts: List[str] = []
-    for g in groundings:
-        gtype = g.get("type", "")
-
-        if gtype == "trend":
-            direction = g.get("trend_direction", "flat")
-            magnitude = g.get("trend_magnitude", "slightly")
-            horizon   = g.get("horizon", "?")
-            slope     = g.get("trend_slope", 0)
-            if direction == "flat":
-                parts.append(
-                    f"The central forecast stays essentially flat over {horizon} steps "
-                    f"(rising by only {abs(slope):.4f} units per step)."
-                )
-            elif direction == "rising":
-                parts.append(
-                    f"The central (most likely) outcome rises {magnitude} over {horizon} steps, "
-                    f"gaining about {abs(slope):.4f} units per step."
-                )
-            else:
-                parts.append(
-                    f"The central (most likely) outcome falls {magnitude} over {horizon} steps, "
-                    f"losing about {abs(slope):.4f} units per step."
-                )
-
-        elif gtype == "uncertainty":
-            level = g.get("uncertainty_level", "moderate")
-            trend = g.get("uncertainty_trend", "stable")
-            gloss = _UNCERTAINTY_GLOSS.get((level, trend), "moderate uncertainty")
-            parts.append(
-                f"The range of likely values is {level} and {trend}, indicating {gloss}."
-            )
-
-        elif gtype == "risk":
-            if g.get("downside_risk"):
-                parts.append(
-                    "The lower end of the forecast range dips more than 20% below "
-                    "current levels, signalling a meaningful risk of a significant drop."
-                )
-            if g.get("upside_potential"):
-                parts.append(
-                    "The upper end of the forecast range exceeds 20% above current levels, "
-                    "indicating meaningful room for further gains."
-                )
-
-        elif gtype == "regime_shift":
-            pval = g.get("regime_shift_pvalue", 1.0)
-            parts.append(
-                f"A notable change in the underlying pattern is detected near the "
-                f"forecast midpoint (p = {pval:.4f})."
-            )
-
-        elif gtype == "attribution":
-            name      = g.get("covariate_name", "unknown")
-            direction = g.get("direction", "positive")
-            impact    = g.get("relative_impact_pct", 0)
-            verb = "pushes values up" if direction == "positive" else "pulls values down"
-            parts.append(
-                f"{name} {verb} by {impact:.1f}% of the total attribution, "
-                f"making it a {direction} factor in the forecast."
-            )
-
-    return " ".join(parts)
-
-
 # ──────────── premise renderer ────────────────────────────────────────
 def render_premise(grounding: Dict[str, Any]) -> str:
     """Convert a grounding dictionary to an unambiguous English premise."""
@@ -213,11 +125,7 @@ def render_premise(grounding: Dict[str, Any]) -> str:
         )
 
     if gtype == "combined":
-        # Technical numerical premise (unchanged — used for Template verbalizer)
-        technical = " ".join(render_premise(g) for g in grounding.get("groundings", []))
-        # Plain-language glosses — bridge the vocabulary gap for the LLM verbalizer
-        plain = _plain_language_gloss(grounding.get("groundings", []))
-        return (technical + " " + plain).strip() if plain else technical
+        return " ".join(render_premise(g) for g in grounding.get("groundings", []))
 
     if gtype.startswith("rst_"):
         relation = grounding.get("relation", "unknown")
@@ -279,14 +187,10 @@ class NLIConsistencyScorer:
             )
         return self._pipeline
 
-    # Labels emitted by different NLI models — looked up by name so we
-    # remain correct regardless of which model is configured.
-    #
-    # BART-large-MNLI:               ENTAILMENT=LABEL_2, NEUTRAL=LABEL_1, CONTRADICTION=LABEL_0
-    # cross-encoder/nli-deberta-v3:  ENTAILMENT=LABEL_1, NEUTRAL=LABEL_2, CONTRADICTION=LABEL_0
-    # roberta-large-mnli / deberta-large-mnli: uses string labels directly
-    _ENTAILMENT_LABELS = {"entailment", "ENTAILMENT", "LABEL_2", "LABEL_1"}
-    _NEUTRAL_LABELS    = {"neutral",    "NEUTRAL",    "LABEL_1", "LABEL_2"}
+    # Labels emitted by BART-large-MNLI (and most MNLI-trained models).
+    # The model returns them in arbitrary order; we look them up by name.
+    _ENTAILMENT_LABELS = {"entailment", "ENTAILMENT", "LABEL_2"}
+    _NEUTRAL_LABELS    = {"neutral",    "NEUTRAL",    "LABEL_1"}
     _CONTRA_LABELS     = {"contradiction", "CONTRADICTION", "LABEL_0"}
 
     # Entailment probability below this value is flagged as a near-contradiction.
