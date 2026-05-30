@@ -4,6 +4,16 @@ NLI-based consistency scorer.
 Evaluates whether a verbalized forecast summary is factually consistent
 with the underlying numerical features using a Natural Language
 Inference (NLI) model from HuggingFace.
+
+Design note
+-----------
+The scorer uses the ``text-classification`` pipeline with ``text_pair``
+input so that the model's native 3-class NLI head
+(ENTAILMENT / NEUTRAL / CONTRADICTION) is invoked directly.
+
+This is different from ``zero-shot-classification``, which reformulates
+the input as a topic-label problem and never exposes the contradiction
+class — producing inflated, unreliable entailment scores.
 """
 
 from __future__ import annotations
@@ -49,15 +59,22 @@ class ConsistencyReport:
     Attributes
     ----------
     overall_score : float
+        Mean entailment probability across all sentences.
     sentence_scores : list[SentenceScore]
     is_consistent : bool
+        True when ``overall_score >= threshold``.
     threshold : float
+    contradiction_rate : float
+        Fraction of sentences whose entailment probability is below 0.30,
+        indicating near-contradictions with their numerical premise.
+        This is a direct failure detector that is not captured by the mean.
     """
 
     overall_score: float
     sentence_scores: List[SentenceScore]
     is_consistent: bool
     threshold: float
+    contradiction_rate: float = 0.0
 
 
 # ──────────── premise renderer ────────────────────────────────────────
@@ -182,16 +199,44 @@ class NLIConsistencyScorer:
 
     def _load(self) -> Any:
         if self._pipeline is None:
-            logger.info("Loading NLI model %s …", self.model_name)
+            logger.info("Loading NLI model %s (text-classification / text_pair mode) …", self.model_name)
             self._pipeline = hf_pipeline(
-                "zero-shot-classification",
+                "text-classification",
                 model=self.model_name,
                 device=self.device if self.device != "cpu" else -1,
+                # Return all three NLI class scores so we can read each probability.
+                top_k=None,
             )
         return self._pipeline
 
+    # Labels emitted by BART-large-MNLI (and most MNLI-trained models).
+    # The model returns them in arbitrary order; we look them up by name.
+    _ENTAILMENT_LABELS = {"entailment", "ENTAILMENT", "LABEL_2"}
+    _NEUTRAL_LABELS    = {"neutral",    "NEUTRAL",    "LABEL_1"}
+    _CONTRA_LABELS     = {"contradiction", "CONTRADICTION", "LABEL_0"}
+
+    # Entailment probability below this value is flagged as a near-contradiction.
+    _CONTRADICTION_THRESHOLD = 0.30
+
+    def _parse_nli_result(self, raw: List[Dict[str, Any]]) -> tuple[float, float, float]:
+        """Extract (entailment, neutral, contradiction) probabilities from raw pipeline output.
+
+        ``text-classification`` with ``top_k=None`` returns a list of
+        ``{"label": str, "score": float}`` dicts — one per class.
+        We look up each label by name to handle different model label schemes.
+        """
+        probs: dict[str, float] = {item["label"]: item["score"] for item in raw}
+        ent = next((v for k, v in probs.items() if k in self._ENTAILMENT_LABELS), 0.0)
+        neu = next((v for k, v in probs.items() if k in self._NEUTRAL_LABELS),    0.0)
+        con = next((v for k, v in probs.items() if k in self._CONTRA_LABELS),     0.0)
+        return float(ent), float(neu), float(con)
+
     def score(self, verbalization: VerbalizationResult) -> ConsistencyReport:
         """Compute NLI consistency for every sentence.
+
+        Each (premise, sentence) pair is fed to the NLI model as a
+        ``text_pair`` input so the model's 3-class head
+        (ENTAILMENT / NEUTRAL / CONTRADICTION) is used directly.
 
         Parameters
         ----------
@@ -221,28 +266,40 @@ class NLIConsistencyScorer:
                 )
                 continue
 
-            result = pipe(
-                premise,
-                candidate_labels=[sentence],
-                hypothesis_template="{}",
-                multi_label=True,
-            )
+            # ── Correct NLI call: premise + sentence as a text pair ──────────
+            # The model reads both texts jointly through cross-attention and
+            # returns 3-class probabilities from its NLI head.
+            raw = pipe({"text": premise, "text_pair": sentence})
+            ent, neu, con = self._parse_nli_result(raw)
 
-            entailment_prob = float(result["scores"][0])
             sentence_scores.append(
                 SentenceScore(
                     sentence=sentence,
                     premise=premise,
-                    entailment_prob=entailment_prob,
-                    neutral_prob=(1.0 - entailment_prob) * 0.6,
-                    contradiction_prob=(1.0 - entailment_prob) * 0.4,
+                    entailment_prob=ent,
+                    neutral_prob=neu,
+                    contradiction_prob=con,
                 )
             )
+            logger.debug(
+                "NLI sentence %d: ent=%.3f neu=%.3f con=%.3f | %s",
+                idx, ent, neu, con, sentence[:60],
+            )
 
-        overall = float(np.mean([s.entailment_prob for s in sentence_scores])) if sentence_scores else 0.0
+        if not sentence_scores:
+            overall = 0.0
+            contradiction_rate = 0.0
+        else:
+            overall = float(np.mean([s.entailment_prob for s in sentence_scores]))
+            contradiction_rate = float(
+                np.mean([s.entailment_prob < self._CONTRADICTION_THRESHOLD for s in sentence_scores])
+            )
+
+
         return ConsistencyReport(
             overall_score=overall,
             sentence_scores=sentence_scores,
             is_consistent=overall >= self.threshold,
             threshold=self.threshold,
+            contradiction_rate=contradiction_rate,
         )
