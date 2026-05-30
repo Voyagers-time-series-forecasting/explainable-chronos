@@ -34,43 +34,61 @@ logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a quantitative analyst writing concise, professional forecast summaries. "
-    "You receive a draft description of a time-series forecast and rewrite it for clarity "
-    "and fluency while preserving every numerical value and factual claim exactly as stated.\n"
-    "CRITICAL CONSTRAINTS:\n"
-    "1. Keep your rewrite strictly under 4-5 sentences. Be extremely concise.\n"
-    "2. DO NOT add interpretations, causal claims, or hallucinate relationships.\n"
-    "3. NEVER change the direction (positive/negative) or percentages of covariate impacts."
+    "You receive structured numerical facts about a time-series forecast and write a "
+    "clear, fluent summary directly from those facts.\n\n"
+    "ENTAILMENT RULE (critical):\n"
+    "Every sentence you write will be verified by an NLI model that checks whether "
+    "the numerical facts ENTAIL your sentence. To maximise entailment:\n"
+    "  - Each sentence must be fully and directly supported by the stated facts.\n"
+    "  - Use the exact direction words (rising/falling/flat), magnitude words "
+    "(sharply/moderately/slightly), and numerical values given in the facts.\n"
+    "  - One sentence per feature (trend, uncertainty, risk, covariate). "
+    "Do not merge features that come from different fact groups.\n"
+    "  - Do NOT add causal interpretations, domain knowledge, or any claim "
+    "not directly stated in the facts. Such additions cannot be entailed and "
+    "will be flagged as contradictions.\n"
+    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n"
+    "CONSTRAINTS:\n"
+    "  - 3 to 5 sentences maximum. Be concise.\n"
+    "  - Never change the sign or magnitude of a covariate impact percentage."
 )
 
 # ---------------------------------------------------------------------------
-# Few-shot examples (cover three representative scenarios)
+# Few-shot examples: FACTS → SUMMARY (no draft)
 # ---------------------------------------------------------------------------
 
 _FEW_SHOT_BLOCK = """\
-## Example 1
-DRAFT: The P50 forecast is rising sharply. The prediction interval is moderate and stable. \
-Upside potential is flagged. Temperature has a positive effect on the forecast, contributing \
-45.2% of the total attribution.
-REWRITE: The median forecast shows a sharp upward trajectory over the horizon. The prediction \
-interval is moderate and stable, reflecting consistent forecast confidence. The P90 quantile \
-signals meaningful upside potential. Temperature is the dominant positive driver, accounting \
-for 45.2% of the total covariate attribution.
+## Example 1  [lead with covariate, then trend, then uncertainty, then risk]
+FACTS:
+  trend_direction: rising | trend_magnitude: sharply | trend_slope: +0.1842 | horizon: 96
+  uncertainty_level: moderate | uncertainty_trend: stable
+  downside_risk: false | upside_potential: true
+  covariate: temperature | direction: positive | impact_pct: 45.2
+SUMMARY: Temperature is the dominant positive driver, contributing 45.2% of the total attribution. \
+Over the next 96 periods the median forecast rises sharply, with a slope of +0.1842 per period. \
+Prediction intervals are moderately wide and remain stable throughout the horizon. \
+The P90 quantile signals meaningful upside potential.
 
-## Example 2
-DRAFT: The P50 forecast is falling moderately. The prediction interval is high and widening. \
-Downside risk is flagged. A regime shift was detected.
-REWRITE: The median forecast shows a moderate downward trend. The prediction interval is wide \
-and expanding, indicating growing uncertainty over the horizon. The P10 quantile flags downside \
-risk, with values potentially falling below 80% of the last observed level. A statistically \
-significant regime shift was detected at the forecast midpoint, suggesting a structural change \
-in the series dynamics.
+## Example 2  [lead with uncertainty/risk, then trend, no covariate]
+FACTS:
+  trend_direction: falling | trend_magnitude: moderately | trend_slope: -0.0934 | horizon: 96
+  uncertainty_level: high | uncertainty_trend: widening
+  downside_risk: true | upside_potential: false
+  regime_shift: true | regime_shift_pvalue: 0.0031
+SUMMARY: Prediction intervals are wide and expanding over the 96-period horizon, reflecting rapidly growing uncertainty. \
+The P10 quantile flags significant downside risk, with lower bounds exceeding 20% below current levels. \
+Against this backdrop, the median forecast falls moderately (slope: −0.0934 per period). \
+A statistically significant structural break is detected near the forecast midpoint (p = 0.0031).
 
-## Example 3
-DRAFT: The P50 forecast is flat. The prediction interval is low and stable. Wind has a negative \
-effect on the forecast, contributing 38.1% of the total attribution.
-REWRITE: The median forecast remains flat over the forecast horizon. The prediction interval is \
-narrow and stable, indicating high forecast confidence. Wind is the dominant negative driver, \
-accounting for 38.1% of the total covariate attribution.
+## Example 3  [compact form — trend and uncertainty merged, then covariate]
+FACTS:
+  trend_direction: flat | trend_magnitude: slightly | trend_slope: +0.0021 | horizon: 96
+  uncertainty_level: low | uncertainty_trend: narrowing
+  downside_risk: false | upside_potential: false
+  covariate: wind | direction: negative | impact_pct: 38.1
+SUMMARY: Over the next 96 periods, values are projected to remain essentially flat (slope: +0.0021), \
+with narrow and converging prediction intervals that indicate high forecast confidence. \
+Wind is the dominant negative driver, accounting for 38.1% of the total attribution.
 """
 
 
@@ -123,11 +141,17 @@ class LLMVerbalizer:
         features: ForecastFeatures,
         attribution: AttributionResult | None = None,
     ) -> VerbalizationResult:
-        """Verbalize with LLM refinement over a template draft."""
+        """Generate a summary directly from numerical features (no template draft).
+
+        The template verbalizer is still used internally to obtain a grounding
+        dictionary for the NLI scorer, but its prose is NOT fed to the LLM.
+        """
         self._load_model()
 
+        # Grounding metadata for NLI — derived from template, not shown to LLM.
         template_result = self.template_verbalizer.verbalize(features, attribution)
-        prompt = self.build_refinement_prompt(features, template_result, attribution)
+
+        prompt = self.build_refinement_prompt(features, attribution)
 
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -146,18 +170,19 @@ class LLMVerbalizer:
             outputs = self._model.generate(
                 **inputs,
                 max_new_tokens=512,
-                do_sample=False,          # greedy — maximises factual accuracy
-                repetition_penalty=1.15,  # discourage verbatim repetition of template
+                do_sample=False,          # greedy — maximises factual fidelity
+                repetition_penalty=1.15,
             )
 
         response = self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
         response = response.replace("<eos>", "").replace("<bos>", "").strip()
 
-        # Strip "REWRITE:" prefix the model may echo back
-        if response.upper().startswith("REWRITE:"):
-            response = response[len("REWRITE:"):].strip()
+        # Strip "SUMMARY:" prefix the model may echo back.
+        for prefix in ("SUMMARY:", "REWRITE:"):
+            if response.upper().startswith(prefix):
+                response = response[len(prefix):].strip()
+                break
 
-        # Split on periods followed by space/end of string to avoid splitting decimals!
         sentences = [s.strip() + "." for s in re.split(r'\.(?:\s+|$)', response) if s.strip()]
         grounding = {
             f"sentence_{i}": {
@@ -172,7 +197,7 @@ class LLMVerbalizer:
             sentences=sentences,
             grounding=grounding,
             rst_relations=list(getattr(template_result, "rst_relations", [])),
-            draft_summary=template_result.summary,
+            draft_summary=template_result.summary,   # kept for traceability
             prompt=text,
         )
 
@@ -206,33 +231,55 @@ class LLMVerbalizer:
     def build_refinement_prompt(
         self,
         features: ForecastFeatures,
-        template_result: VerbalizationResult | None = None,
         attribution: AttributionResult | None = None,
     ) -> str:
-        """Construct the few-shot refinement prompt."""
-        if template_result is None:
-            template_result = self.template_verbalizer.verbalize(features, attribution)
+        """Construct the few-shot FACTS→SUMMARY prompt (no template draft).
 
-        facts = "\n".join(
-            f"  {k}: {v}"
-            for k, v in features.to_dict().items()
-            if k != "threshold_breaches"
-        )
+        The prompt gives the LLM only the raw numerical facts and grounding
+        triples. The template prose is intentionally withheld so the LLM
+        generates an independent verbalization.
+        """
+        # ── Compact fact block (one line per feature group) ──────────────
+        f = features
+        fact_lines = [
+            f"  trend_direction: {f.trend_direction} | "
+            f"trend_magnitude: {f.trend_magnitude} | "
+            f"trend_slope: {f.trend_slope:+.4f} | "
+            f"horizon: {f.horizon}",
+
+            f"  uncertainty_level: {f.uncertainty_level} | "
+            f"uncertainty_trend: {f.uncertainty_trend} | "
+            f"mean_interval_width: {f.mean_interval_width:.4f}",
+
+            f"  downside_risk: {str(f.downside_risk).lower()} | "
+            f"upside_potential: {str(f.upside_potential).lower()}",
+
+            f"  regime_shift: {str(f.regime_shift).lower()}"
+            + (f" | pvalue: {f.regime_shift_pvalue:.4f}" if f.regime_shift else ""),
+        ]
+
+        if attribution and attribution.attributions:
+            for attr in attribution.attributions[: attribution.top_k]:
+                fact_lines.append(
+                    f"  covariate: {attr.name} | "
+                    f"direction: {attr.direction} | "
+                    f"impact_pct: {attr.relative_impact_pct:.1f}"
+                )
+
+        facts_str = "\n".join(fact_lines)
         triples_str = "; ".join(
             f"{s} {p} {o}"
             for s, p, o in self.build_grounding_triples(features, attribution)
         )
 
         return (
-            "Rewrite the DRAFT below into fluent professional prose. "
-            "Preserve every number and factual claim exactly. "
-            "Do not add new facts or causal interpretations.\n\n"
+            "Write a forecast summary from the structured facts below. "
+            "Each sentence must be directly and fully entailed by the stated facts — "
+            "use the exact direction, magnitude, and numerical values given.\n\n"
             + _FEW_SHOT_BLOCK
             + "\n---\n\n"
-            "## Now rewrite the following\n"
-            "CONSTRAINT: Be extremely concise. Do not add any extra commentary.\n"
-            f"NUMERICAL FACTS: {facts}\n"
-            f"GROUNDING: {triples_str}\n\n"
-            f"DRAFT: {template_result.summary}\n"
-            "REWRITE:"
+            "## Now write a summary for:\n"
+            f"FACTS:\n{facts_str}\n"
+            f"GROUNDING TRIPLES: {triples_str}\n"
+            "SUMMARY:"
         )
