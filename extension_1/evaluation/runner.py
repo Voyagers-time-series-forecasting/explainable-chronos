@@ -463,6 +463,7 @@ def run_evaluation(
                     "horizon": len(future),
                     "overall_consistency": result.consistency_report.overall_score,
                     "is_consistent": result.consistency_report.is_consistent,
+                    "contradiction_rate": result.consistency_report.contradiction_rate,
                     "num_sentences": len(result.verbalization.sentences),
                     "mase": accuracy["mase"],
                     "mase_first": accuracy["mase_first"],
