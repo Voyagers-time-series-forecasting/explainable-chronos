@@ -33,23 +33,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You are a quantitative analyst writing concise, professional forecast summaries. "
+    "You are a quantitative analyst writing informative, professional forecast summaries. "
     "You receive structured numerical facts about a time-series forecast and write a "
-    "clear, fluent summary directly from those facts.\n\n"
+    "clear, explanatory summary directly from those facts.\n\n"
     "ENTAILMENT RULE (critical):\n"
     "Every sentence you write will be verified by an NLI model that checks whether "
     "the numerical facts ENTAIL your sentence. To maximise entailment:\n"
     "  - Each sentence must be fully and directly supported by the stated facts.\n"
     "  - Use the exact direction words (rising/falling/flat), magnitude words "
     "(sharply/moderately/slightly), and numerical values given in the facts.\n"
-    "  - One sentence per feature (trend, uncertainty, risk, covariate). "
-    "Do not merge features that come from different fact groups.\n"
     "  - Do NOT add causal interpretations, domain knowledge, or any claim "
     "not directly stated in the facts. Such additions cannot be entailed and "
     "will be flagged as contradictions.\n"
-    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n"
+    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n\n"
+    "ATTRIBUTION RULE:\n"
+    "When covariate facts are provided, mention ALL of them — not just the top one. "
+    "For each covariate state its direction (positive/negative) and exact impact percentage. "
+    "Explain the relative distribution: which dominates, which are secondary, "
+    "and whether they all push in the same direction or oppose each other. "
+    "This is the most important part of the explanation for the user.\n\n"
     "CONSTRAINTS:\n"
-    "  - 3 to 5 sentences maximum. Be concise.\n"
+    "  - 4 to 6 sentences. Prioritise being informative over being brief.\n"
     "  - Never change the sign or magnitude of a covariate impact percentage."
 )
 
@@ -58,37 +62,54 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 _FEW_SHOT_BLOCK = """\
-## Example 1  [lead with covariate, then trend, then uncertainty, then risk]
+## Example 1  [lead with covariate breakdown, then trend, then uncertainty, then risk]
 FACTS:
   trend_direction: rising | trend_magnitude: sharply | trend_slope: +0.1842 | horizon: 96
   uncertainty_level: moderate | uncertainty_trend: stable
   downside_risk: false | upside_potential: true
   covariate: temperature | direction: positive | impact_pct: 45.2
-SUMMARY: Temperature is the dominant positive driver, contributing 45.2% of the total attribution. \
+  covariate: humidity | direction: positive | impact_pct: 31.7
+  covariate: wind_speed | direction: negative | impact_pct: 23.1
+  attribution_summary: temperature (45.2% pos), humidity (31.7% pos), wind_speed (23.1% neg)
+SUMMARY: The covariate attribution is dominated by temperature (45.2% positive influence) and \
+humidity (31.7% positive), both pushing the forecast upward, while wind_speed partially offsets \
+these with a negative contribution of 23.1%. \
 Over the next 96 periods the median forecast rises sharply, with a slope of +0.1842 per period. \
 Prediction intervals are moderately wide and remain stable throughout the horizon. \
 The P90 quantile signals meaningful upside potential.
 
-## Example 2  [lead with uncertainty/risk, then trend, no covariate]
+## Example 2  [lead with uncertainty/risk, then trend, then full attribution breakdown]
 FACTS:
   trend_direction: falling | trend_magnitude: moderately | trend_slope: -0.0934 | horizon: 96
   uncertainty_level: high | uncertainty_trend: widening
   downside_risk: true | upside_potential: false
   regime_shift: true | regime_shift_pvalue: 0.0031
-SUMMARY: Prediction intervals are wide and expanding over the 96-period horizon, reflecting rapidly growing uncertainty. \
+  covariate: pressure | direction: negative | impact_pct: 52.4
+  covariate: cloud_cover | direction: negative | impact_pct: 30.1
+  covariate: dew_point | direction: positive | impact_pct: 17.5
+  attribution_summary: pressure (52.4% neg), cloud_cover (30.1% neg), dew_point (17.5% pos)
+SUMMARY: Prediction intervals are wide and expanding over the 96-period horizon, reflecting \
+rapidly growing uncertainty. \
 The P10 quantile flags significant downside risk, with lower bounds exceeding 20% below current levels. \
-Against this backdrop, the median forecast falls moderately (slope: −0.0934 per period). \
-A statistically significant structural break is detected near the forecast midpoint (p = 0.0031).
+The median forecast falls moderately over the 96 periods (slope: −0.0934 per period), and a \
+statistically significant structural break is detected near the midpoint (p = 0.0031). \
+On the attribution side, pressure is the dominant negative driver at 52.4%, reinforced by \
+cloud_cover (30.1% negative); dew_point partially counteracts these with a positive contribution of 17.5%.
 
-## Example 3  [compact form — trend and uncertainty merged, then covariate]
+## Example 3  [compact trend+uncertainty, then detailed attribution]
 FACTS:
   trend_direction: flat | trend_magnitude: slightly | trend_slope: +0.0021 | horizon: 96
   uncertainty_level: low | uncertainty_trend: narrowing
   downside_risk: false | upside_potential: false
   covariate: wind | direction: negative | impact_pct: 38.1
-SUMMARY: Over the next 96 periods, values are projected to remain essentially flat (slope: +0.0021), \
-with narrow and converging prediction intervals that indicate high forecast confidence. \
-Wind is the dominant negative driver, accounting for 38.1% of the total attribution.
+  covariate: temp_min | direction: positive | impact_pct: 35.6
+  covariate: precipitation | direction: positive | impact_pct: 26.3
+  attribution_summary: wind (38.1% neg), temp_min (35.6% pos), precipitation (26.3% pos)
+SUMMARY: Over the next 96 periods, values are projected to remain essentially flat \
+(slope: +0.0021), with narrow and converging prediction intervals indicating high forecast confidence. \
+The attribution is closely distributed across three covariates: wind exerts the largest negative \
+influence at 38.1%, while temp_min (35.6%) and precipitation (26.3%) both push positively, \
+almost balancing wind's effect.
 """
 
 
@@ -259,12 +280,19 @@ class LLMVerbalizer:
         ]
 
         if attribution and attribution.attributions:
-            for attr in attribution.attributions[: attribution.top_k]:
+            attrs = attribution.attributions[: attribution.top_k]
+            for attr in attrs:
                 fact_lines.append(
                     f"  covariate: {attr.name} | "
                     f"direction: {attr.direction} | "
                     f"impact_pct: {attr.relative_impact_pct:.1f}"
                 )
+            # Pre-formatted attribution summary so the model sees the full distribution at a glance
+            summary_parts = ", ".join(
+                f"{a.name} ({a.relative_impact_pct:.1f}% {a.direction})"
+                for a in attrs
+            )
+            fact_lines.append(f"  attribution_summary: {summary_parts}")
 
         facts_str = "\n".join(fact_lines)
         triples_str = "; ".join(
