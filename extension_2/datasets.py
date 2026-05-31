@@ -1,7 +1,7 @@
 """
 Extension 2 — Query datasets.
 
-EXAMPLE_SET (70 queries): the labeled pool used as few-shot examples by
+EXAMPLE_SET (100 queries): the labeled pool used as few-shot examples by
 the BERT tier. It merges what were previously called DEV and TEST sets.
 
 TEST_SET (10 queries): the held-out evaluation set, written after all
@@ -166,10 +166,10 @@ EXAMPLE_SET: List[TestCase] = [
     TestCase("How would higher shipping delays last month have changed the outcome?", "counterfactual", "Historical counterfactual on shipping_delay_hours", expected_covariate="shipping_delay_hours"),
 ]
 
-# ── Test set (40 queries) ─────────────────────────────────────────────
+# ── Test set (60 queries) ─────────────────────────────────────────────
 # Written after all patterns and the BERT pool were frozen.
 # Never seen during development. This is the reported evaluation set.
-# Breakdown: 10 original held-out + 16 ambiguous + 14 outlier.
+# Breakdown: 17 standard + 23 ambiguous + 20 outlier.
 TEST_SET: List[TestCase] = [
     # ── original held-out cases (10) ─────────────────────────────────
     TestCase("How much uncertainty surrounds this prediction?", "confidence_query", "Uncertainty question without the word 'confidence'"),
