@@ -1,9 +1,4 @@
-"""Rule catalog for the deterministic Extension 2 intent baseline.
-
-The parser deliberately keeps these patterns data-only. This makes the
-rule-based baseline easy to inspect, test, and replace without burying
-regular expressions in the public parser API.
-"""
+"""Rule catalog for the deterministic Extension 2 intent baseline."""
 
 from __future__ import annotations
 
@@ -14,7 +9,6 @@ from typing import Dict, Tuple
 @dataclass(frozen=True)
 class PatternSet:
     """Named regex collection for one intent family."""
-
     intent_type: str
     patterns: Tuple[str, ...]
 
@@ -106,28 +100,18 @@ HORIZON_WORD_NUMBERS: Dict[str, int] = {
 }
 
 HORIZON_UNITS: Dict[str, int] = {
-    "hour": 1,
-    "hours": 1,
-    "day": 24,
-    "days": 24,
-    "week": 168,
-    "weeks": 168,
-    "month": 720,
-    "months": 720,
-    "period": 1,
-    "periods": 1,
-    "step": 1,
-    "steps": 1,
+    "hour": 1, "hours": 1,
+    "day": 24, "days": 24,
+    "week": 168, "weeks": 168,
+    "month": 720, "months": 720,
+    "period": 1, "periods": 1,
+    "step": 1, "steps": 1,
 }
 
 FACTOR_WORDS: Dict[str, float] = {
-    "double": 2.0,
-    "doubled": 2.0,
-    "triple": 3.0,
-    "tripled": 3.0,
-    "half": 0.5,
-    "halve": 0.5,
-    "halved": 0.5,
+    "double": 2.0, "doubled": 2.0,
+    "triple": 3.0, "tripled": 3.0,
+    "half": 0.5, "halve": 0.5, "halved": 0.5,
     "quarter": 0.25,
 }
 

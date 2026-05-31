@@ -1,4 +1,4 @@
-"""Template-based forecast verbalizer"""
+"""Template-based forecast verbalizer."""
 
 from __future__ import annotations
 
@@ -16,10 +16,7 @@ from extension_1.features.extractor import ForecastFeatures
 logger = logging.getLogger(__name__)
 
 
-# ───────────────── RST discourse relations ────────────────────────────
 class RSTRelation(Enum):
-    """Rhetorical Structure Theory discourse relations."""
-
     CAUSE = "cause"
     CONTRAST = "contrast"
     CONCESSION = "concession"
@@ -35,7 +32,7 @@ class DiscoursePlanner:
         features: ForecastFeatures,
         attribution: AttributionResult | None = None,
     ) -> list[tuple[RSTRelation, dict[str, Any]]]:
-        """Return ``(relation, template_kwargs)`` pairs to render."""
+        """Return (relation, template_kwargs) pairs to render as RST sentences."""
         relations: list[tuple[RSTRelation, dict[str, Any]]] = []
 
         if features.trend_direction == "rising" and features.downside_risk:
@@ -82,11 +79,10 @@ class DiscoursePlanner:
                     },
                 ))
 
-
         return relations
 
 
-# ────────── phrase-variant dictionaries ───────────────────────────────
+# Phrase-variant pools for lexical diversity across windows
 _DIRECTION_PHRASES: dict[str, list[str]] = {
     "rising": [
         "expected to increase",
@@ -181,14 +177,11 @@ _RST_CONNECTORS: dict[RSTRelation, list[str]] = {
 }
 
 
-# ─────────────── Approach A: RST-template-based ───────────────────────
 class TemplateVerbalizer:
     """RST-based sentence planner for forecast summaries.
 
-    Parameters
-    ----------
-    seed : int
-        Random seed for reproducible phrase-variant selection.
+    Produces a deterministic draft that the LLMVerbalizer uses as input.
+    Each sentence is paired with a grounding dict for NLI consistency scoring.
     """
 
     def __init__(self, seed: int = RANDOM_SEED) -> None:
@@ -206,7 +199,7 @@ class TemplateVerbalizer:
         grounding: dict[str, Any] = {}
         rst_used: list[str] = []
 
-        # ── Sentence 1: Trend ─────────────────────────────────────
+        # Sentence 1: Trend
         direction_phrase = rng.choice(_DIRECTION_PHRASES[features.trend_direction])
         if features.trend_direction == "flat":
             trend_sentence = (
@@ -229,12 +222,13 @@ class TemplateVerbalizer:
             "horizon": features.horizon,
         }
 
-        # ── Sentence 2: Trajectory (concrete P50 values + turning points) ──
+        # Sentence 2: Trajectory (concrete P50 values + turning points)
         if features.trajectory:
             traj_sentence, traj_grounding = verbalize_trajectory(features.trajectory)
             sentences.append(traj_sentence)
             grounding[f"sentence_{len(sentences) - 1}"] = traj_grounding
 
+        # Sentence 3: Uncertainty
         sentences.append(
             f"Prediction intervals are "
             f"{rng.choice(_UNCERTAINTY_LEVEL_PHRASES[features.uncertainty_level])} and "
@@ -250,7 +244,7 @@ class TemplateVerbalizer:
             "interval_width_slope": features.interval_width_slope,
         }
 
-        # ── Sentence 3: Risk flags (conditional) ──────────────────
+        # Sentence 4: Tail-risk flags (conditional)
         risk_parts: list[str] = []
         if features.downside_risk:
             risk_parts.append(
@@ -269,7 +263,7 @@ class TemplateVerbalizer:
                 "regime_shift": features.regime_shift,
             }
 
-        # ── RST-driven sentences ──────────────────────────────────
+        # RST-driven discourse sentences
         for relation, kwargs in self._planner.plan(features, attribution):
             rst_sentence = rng.choice(_RST_CONNECTORS[relation]).format(**kwargs)
             sentences.append(rst_sentence[0].upper() + rst_sentence[1:])
@@ -280,11 +274,12 @@ class TemplateVerbalizer:
                 **kwargs,
             }
 
-        # ── Attribution sentences ─────────────────────────────────
+        # Attribution sentences (one per top-k covariate)
         if attribution and attribution.attributions:
             for attr in attribution.attributions[: attribution.top_k]:
+                direction_word = getattr(attr, "direction", "positive")
                 sentences.append(
-                    f"{attr.name.replace('_', ' ').title()} has a positive effect "
+                    f"{attr.name.replace('_', ' ').title()} has a {direction_word} effect "
                     f"on the forecast, contributing {attr.relative_impact_pct:.1f}% of the "
                     f"total attribution."
                 )
@@ -293,9 +288,10 @@ class TemplateVerbalizer:
                     "covariate_name": attr.name,
                     "importance_score": attr.importance_score,
                     "relative_impact_pct": attr.relative_impact_pct,
+                    "direction": direction_word,
                 }
 
-        # ── Temporal focus sentence (conditional on non-trivial saliency) ──
+        # Temporal focus sentence (only when attention saliency is available)
         if attribution and attribution.temporal:
             history_length = len(attribution.temporal[0].saliency)
             tpf_sentence, tpf_grounding = verbalize_temporal_focus(

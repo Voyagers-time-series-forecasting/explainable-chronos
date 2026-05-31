@@ -42,11 +42,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from extension_1.config import PipelineConfig, RANDOM_SEED
-from extension_1.evaluation.scoring import NLIConsistencyScorer
-from extension_1.evaluation.factuality import compute_fact_recall, compute_feature_completeness
+from extension_1.config import (
+    PipelineConfig, RANDOM_SEED,
+    NLI_MODEL_NAME, LLM_MODEL_CPU, LLM_MODEL_CUDA,
+)
+from extension_1.evaluation.scoring import NLIConsistencyScorer, SemanticSimilarityScorer
 from extension_1.attribution.types import CovariateSet
-from extension_1.evaluation.judge import LLMJudge
 from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.evaluation.trace import render_trace
 from extension_1.verbalization.template import TemplateVerbalizer
@@ -323,46 +324,32 @@ def compute_accuracy(
 # ──────────────── pipeline builder ────────────────────────────────────
 
 def build_pipelines(
-    verbalizer_names: List[str],
     seed: int,
     config: PipelineConfig,
-) -> List[Tuple[str, VerbalizationPipeline]]:
-    """Build the requested verbalization pipelines."""
+) -> list[tuple[str, VerbalizationPipeline]]:
+    """Build analyst and executive LLM pipelines sharing one loaded model."""
     provider = ChronosForecastProvider(enable_attention=True)
-    scorer = NLIConsistencyScorer()
-    pipelines: List[Tuple[str, VerbalizationPipeline]] = []
+    nli_scorer = NLIConsistencyScorer()
+    try:
+        analyst_llm = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            persona="analyst",
+        )
+        analyst_llm._load_model()  # eager load so executive can reuse it
 
-    if "template" in verbalizer_names:
-        tv = TemplateVerbalizer(seed=seed)
-        pipelines.append((
-            "Template",
-            VerbalizationPipeline(
-                forecast_provider=provider,
-                verbalizer=tv,
-                scorer=scorer,
-                config=config,
-            ),
-        ))
+        exec_llm = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            persona="executive",
+        )
+        exec_llm.share_model_from(analyst_llm)
 
-    shared_llm: Optional[LLMVerbalizer] = None
-    if "llm" in verbalizer_names:
-        try:
-            shared_llm = LLMVerbalizer(template_verbalizer=TemplateVerbalizer(seed=seed))
-        except Exception as e:
-            logger.warning("Could not initialize LLMVerbalizer: %s", e)
-
-    if "llm" in verbalizer_names and shared_llm is not None:
-        pipelines.append((
-            "LLM",
-            VerbalizationPipeline(
-                forecast_provider=provider,
-                verbalizer=shared_llm,
-                scorer=scorer,
-                config=config,
-            ),
-        ))
-
-    return pipelines
+        return [
+            ("analyst", VerbalizationPipeline(provider, analyst_llm, nli_scorer, config)),
+            ("executive", VerbalizationPipeline(provider, exec_llm, nli_scorer, config)),
+        ]
+    except Exception as e:
+        logger.warning("Could not initialise LLM pipelines: %s", e)
+        return []
 
 
 def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
@@ -375,44 +362,115 @@ def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
     )
 
 
+# ──────────────────────── reproducibility helpers ─────────────────────
+
+def _seed_everything(seed: int) -> None:
+    """Pin all random sources before a run so results are reproducible.
+
+    Covers: Python random, NumPy, PyTorch (CPU + CUDA).  Also disables
+    cuDNN auto-tuning, which selects non-deterministic convolution algorithms.
+    """
+    import random as _random
+    _random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
+
+
+def _save_run_config(
+    out_path: Path,
+    seed: int,
+    mode_key: str,
+    dataset_keys: List[str],
+    pipelines: list,
+) -> None:
+    """Persist a JSON snapshot of every parameter that affects the run.
+
+    Saved alongside the results CSV so any result file can be traced back
+    to the exact configuration, software versions, and code revision.
+    """
+    import sys, datetime, subprocess, importlib.metadata
+
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except Exception:
+        cuda_available = False
+
+    cfg: dict = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": seed,
+        "mode": mode_key,
+        "datasets": dataset_keys,
+        "personas": [p for p, _ in pipelines],
+        "models": {
+            "chronos": "autogluon/chronos-2-small",
+            "nli": NLI_MODEL_NAME,
+            "llm": LLM_MODEL_CUDA if cuda_available else LLM_MODEL_CPU,
+            "sbert": "sentence-transformers/all-MiniLM-L6-v2",
+        },
+        "python": sys.version,
+        "package_versions": {},
+    }
+
+    for pkg in ("torch", "transformers", "sentence_transformers", "chronos"):
+        try:
+            cfg["package_versions"][pkg] = importlib.metadata.version(pkg)
+        except Exception:
+            cfg["package_versions"][pkg] = "unknown"
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).parent,
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        cfg["git_commit"] = commit
+    except Exception:
+        cfg["git_commit"] = "unavailable"
+
+    out_path.mkdir(parents=True, exist_ok=True)
+    config_path = out_path / "run_config.json"
+    with open(config_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    logger.info("Run config saved → %s", config_path)
+
+
 # ──────────────── main evaluation runner ──────────────────────────────
 
 def run_evaluation(
     dataset_keys: List[str],
     mode_key: str = "dev",
-    verbalizer_names: Optional[List[str]] = None,
     seed: int = RANDOM_SEED,
     save_traces: bool = False,
-    use_judge: bool = False,
     output_dir: Optional[Path | str] = None,
 ) -> pd.DataFrame:
-    """Run evaluation on benchmark datasets."""
-    if verbalizer_names is None:
-        verbalizer_names = ["template"]
+    """Run LLM evaluation with NLI + semantic similarity vs template."""
+    _seed_everything(seed)
 
     mode = EVAL_MODES[mode_key]
     config = PipelineConfig(seed=seed)
-    pipelines = build_pipelines(verbalizer_names, seed, config)
+    pipelines = build_pipelines(seed, config)
+    if not pipelines:
+        logger.error("No LLM pipelines available — aborting evaluation.")
+        return pd.DataFrame()
 
-    logger.info(
-        "Real evaluation | mode=%s | datasets=%s | verbalizers=%s",
-        mode_key, dataset_keys, [n for n, _ in pipelines],
-    )
+    sem_scorer = SemanticSimilarityScorer()
+    out_path = Path(output_dir) if output_dir else EVAL_DIR
+    _save_run_config(out_path, seed, mode_key, dataset_keys, pipelines)
+
+    logger.info("LLM evaluation | mode=%s | datasets=%s | personas=%s",
+                mode_key, dataset_keys, [p for p, _ in pipelines])
     logger.info(mode.description)
 
-    judge: Optional[LLMJudge] = None
-    if use_judge:
-        llm_pipe = next(
-            (pipe for _, pipe in pipelines if isinstance(pipe.verbalizer, LLMVerbalizer)),
-            None,
-        )
-        judge = LLMJudge.from_verbalizer(llm_pipe.verbalizer) if llm_pipe else LLMJudge()
-        logger.info("LLM judge initialised.")
-
     records: List[Dict[str, Any]] = []
-    judge_records: List[Dict[str, Any]] = []
-    
-    out_path = Path(output_dir) if output_dir else EVAL_DIR
     traces_dir = out_path / "traces"
 
     for ds_key in dataset_keys:
@@ -427,18 +485,16 @@ def run_evaluation(
             continue
 
         for w_idx, (history, future, past_cov, future_cov) in enumerate(windows):
-
             if not past_cov or not future_cov:
                 logger.warning(
-                    "Skipping window %d [%s] — past or future covariates unavailable.",
-                    w_idx, spec.name,
+                    "Skipping window %d [%s] — covariates unavailable.", w_idx, spec.name
                 )
                 continue
+
             cov_set = _make_covariate_set(past_cov)
             future_cov_set = _make_covariate_set(future_cov)
-            window_results: Dict[str, PipelineResult] = {}
 
-            for v_type, pipe in pipelines:
+            for persona, pipe in pipelines:
                 try:
                     result = pipe.run(
                         history,
@@ -447,23 +503,23 @@ def run_evaluation(
                         future_covariates=future_cov_set,
                     )
                 except Exception as e:
-                    logger.warning(
-                        "Window %d [%s/%s] failed: %s",
-                        w_idx, spec.name, v_type, e,
-                    )
+                    logger.warning("Window %d [%s/%s] failed: %s", w_idx, spec.name, persona, e)
                     continue
 
-                window_results[v_type] = result
                 accuracy = compute_accuracy(result.forecast, future, history)
+                template_text = getattr(result.verbalization, "draft_summary", "") or ""
+                semantic_sim = sem_scorer.score(result.verbalization.summary, template_text)
 
-                record: Dict[str, Any] = {
+                record: dict = {
                     "dataset": spec.name,
                     "window_idx": w_idx,
-                    "verbalizer_type": v_type,
+                    "persona": persona,
                     "history_length": len(history),
                     "horizon": len(future),
                     "overall_consistency": result.consistency_report.overall_score,
                     "is_consistent": result.consistency_report.is_consistent,
+                    "contradiction_rate": result.consistency_report.contradiction_rate,
+                    "semantic_vs_template": semantic_sim,
                     "num_sentences": len(result.verbalization.sentences),
                     "mase": accuracy["mase"],
                     "mase_first": accuracy["mase_first"],
@@ -476,64 +532,26 @@ def run_evaluation(
                 past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
                 record["top_covariate"] = past_attrs[0].name if past_attrs else None
                 record["top_covariate_impact_pct"] = past_attrs[0].relative_impact_pct if past_attrs else None
-                record["fact_recall"] = compute_fact_recall(
-                    result.features, result.attribution, result.verbalization.summary
-                )
-                record["feature_completeness"] = compute_feature_completeness(
-                    result.features, result.attribution, result.verbalization.summary
-                )
 
                 records.append(record)
                 logger.info(
-                    "[%s] window %d/%d [%s]  "
-                    "nli=%.3f  recall=%.2f  completeness=%.2f  "
+                    "[%s] window %d/%d [%s]  nli=%.3f  semantic=%.3f  "
                     "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
-                    spec.name, w_idx + 1, len(windows), v_type,
-                    result.consistency_report.overall_score,
-                    record["fact_recall"],
-                    record["feature_completeness"],
-                    accuracy["mase"],
-                    accuracy["fair_mase"],
-                    accuracy["coverage_pct"],
+                    spec.name, w_idx + 1, len(windows), persona,
+                    result.consistency_report.overall_score, semantic_sim,
+                    accuracy["mase"], accuracy["fair_mase"], accuracy["coverage_pct"],
                 )
 
                 if save_traces:
                     try:
                         render_trace(
-                            result=result,
-                            history=history,
-                            actuals=future,
-                            dataset_name=spec.name,
-                            window_idx=w_idx,
-                            verbalizer_type=v_type,
-                            output_dir=traces_dir,
+                            result=result, history=history, actuals=future,
+                            dataset_name=spec.name, window_idx=w_idx,
+                            verbalizer_type=persona, output_dir=traces_dir,
                             covariates=cov_set,
                         )
                     except Exception as te:
-                        logger.warning("Trace rendering failed [%s/%s]: %s", spec.name, v_type, te)
-
-            if judge is not None and len(window_results) >= 2:
-                try:
-                    verdicts = judge.compare_all(window_results)
-                    for v in verdicts:
-                        judge_records.append({
-                            "dataset": spec.name,
-                            "window_idx": w_idx,
-                            "config_a": v.config_a,
-                            "config_b": v.config_b,
-                            "winner": v.winner,
-                            "scores_a": json.dumps(v.scores_a.to_dict()),
-                            "scores_b": json.dumps(v.scores_b.to_dict()),
-                            "reasoning": v.reasoning,
-                        })
-                except Exception as je:
-                    logger.warning("Judge comparison failed [%s/w%d]: %s", spec.name, w_idx, je)
-
-    if judge_records:
-        judge_df = pd.DataFrame(judge_records)
-        judge_path = out_path / "judge_results.csv"
-        judge_df.to_csv(judge_path, index=False)
-        logger.info("Judge results saved to %s", judge_path)
+                        logger.warning("Trace failed [%s/%s/w%d]: %s", spec.name, persona, w_idx, te)
 
     return pd.DataFrame(records)
 
@@ -547,30 +565,23 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes = axes.flatten()
 
     datasets = sorted(df["dataset"].unique())
-    v_colors = {"Template": "#4c72b0", "LLM": "#dd8452"}
-    v_types = sorted(df["verbalizer_type"].unique())
-    n_types = len(v_types)
-    n_ds = len(datasets)
-    x = np.arange(n_ds)
-    bar_width = 0.6 / max(n_types, 1)
-    offsets = np.linspace(
-        -bar_width * (n_types - 1) / 2,
-        bar_width * (n_types - 1) / 2,
-        n_types,
-    )
+    personas = sorted(df["persona"].unique()) if "persona" in df.columns else ["analyst"]
+    p_colors = {"analyst": "#dd8452", "executive": "#4c72b0"}
+    n_p = len(personas)
+    bar_width = 0.35 if n_p > 1 else 0.5
+    offsets = ([-bar_width/2, bar_width/2] if n_p == 2 else [0])
+    x = np.arange(len(datasets))
 
-    def _ds_means(col: str, vt: str) -> list[float]:
-        return [
-            df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)][col].mean()
-            if len(df[(df["dataset"] == ds) & (df["verbalizer_type"] == vt)]) > 0
-            else 0.0
-            for ds in datasets
-        ]
+
+    def _ds_means(col: str, persona: str = "") -> list[float]:
+        sub = df[df["persona"] == persona] if persona and "persona" in df.columns else df
+        return [sub[sub["dataset"] == ds][col].mean() if len(sub[sub["dataset"] == ds]) > 0 else 0.0
+                for ds in datasets]
 
     # ── Panel 1: MASE by dataset ────────────────────────────────────────
-    for i, vt in enumerate(v_types):
-        axes[0].bar(x + offsets[i], _ds_means("mase", vt), bar_width,
-                    label=vt, color=v_colors.get(vt, "grey"), alpha=0.8)
+    for i, p in enumerate(personas):
+        axes[0].bar(x + offsets[i], _ds_means("mase", p), bar_width,
+                    label=p, color=p_colors.get(p, "grey"), alpha=0.8)
     axes[0].set_title("MASE by Dataset")
     axes[0].set_xticks(x); axes[0].set_xticklabels(datasets, rotation=15)
     axes[0].set_ylabel("MASE (lower is better)")
@@ -578,63 +589,45 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes[0].legend(fontsize=8)
 
     # ── Panel 2: Coverage by dataset ────────────────────────────────────
-    for i, vt in enumerate(v_types):
-        axes[1].bar(x + offsets[i], _ds_means("coverage_pct", vt), bar_width,
-                    label=vt, color=v_colors.get(vt, "grey"), alpha=0.8)
+    for i, p in enumerate(personas):
+        axes[1].bar(x + offsets[i], _ds_means("coverage_pct", p), bar_width,
+                    label=p, color=p_colors.get(p, "grey"), alpha=0.8)
     axes[1].set_title("P10-P90 Coverage by Dataset")
     axes[1].set_xticks(x); axes[1].set_xticklabels(datasets, rotation=15)
     axes[1].set_ylabel("Coverage % (higher is better)")
     axes[1].axhline(80.0, color="green", linestyle="--", alpha=0.5, label="80% target")
     axes[1].legend(fontsize=8)
 
-    # ── Panel 3: NLI Consistency boxplot ────────────────────────────────
-    data_groups = [
-        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].dropna().values
-        for vt in v_types
+    # ── Panel 3: NLI consistency by persona ──────────────────────────────
+    nli_groups = [
+        df.loc[df["persona"] == p, "overall_consistency"].dropna().values
+        if "persona" in df.columns else df["overall_consistency"].dropna().values
+        for p in personas
     ]
-    bp = axes[2].boxplot(data_groups, tick_labels=v_types, patch_artist=True)
-    for patch, vt in zip(bp["boxes"], v_types):
-        patch.set_facecolor(v_colors.get(vt, "grey")); patch.set_alpha(0.7)
+    bp3 = axes[2].boxplot(nli_groups, tick_labels=personas, patch_artist=True)
+    for patch, p in zip(bp3["boxes"], personas):
+        patch.set_facecolor(p_colors.get(p, "grey")); patch.set_alpha(0.7)
     axes[2].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold (0.70)")
-    axes[2].set_title("NLI Consistency by Verbalizer")
+    axes[2].set_title("NLI Consistency by Persona")
     axes[2].set_ylabel("Entailment score")
     axes[2].legend(fontsize=8)
 
-    # ── Panel 4: Text quality (fact recall + feature completeness) ───────
-    quality_cols = [c for c in ("fact_recall", "feature_completeness") if c in df.columns]
-    if quality_cols:
-        n_metrics = len(quality_cols)
-        labels = v_types
-        q_x = np.arange(n_types)
-        col_colors = {"fact_recall": "#2ecc71", "feature_completeness": "#9b59b6"}
-        col_labels = {"fact_recall": "Fact recall", "feature_completeness": "Completeness"}
-        metric_width = 0.35 / max(n_metrics, 1)
-        metric_offsets = np.linspace(
-            -metric_width * (n_metrics - 1) / 2,
-            metric_width * (n_metrics - 1) / 2,
-            n_metrics,
-        )
-        for j, col in enumerate(quality_cols):
-            means = [
-                df[df["verbalizer_type"] == vt][col].mean()
-                if col in df.columns and len(df[df["verbalizer_type"] == vt]) > 0
-                else 0.0
-                for vt in v_types
-            ]
-            axes[3].bar(
-                q_x + metric_offsets[j], means, metric_width,
-                label=col_labels.get(col, col),
-                color=col_colors.get(col, "grey"), alpha=0.8,
-            )
-        axes[3].set_title("Text Quality by Verbalizer")
-        axes[3].set_xticks(q_x); axes[3].set_xticklabels(labels)
-        axes[3].set_ylabel("Score (higher is better)")
+    # ── Panel 4: Semantic similarity vs template by persona ────────────────
+    if "semantic_vs_template" in df.columns:
+        sem_groups = [
+            df.loc[df["persona"] == p, "semantic_vs_template"].dropna().values
+            if "persona" in df.columns else df["semantic_vs_template"].dropna().values
+            for p in personas
+        ]
+        bp4 = axes[3].boxplot(sem_groups, tick_labels=personas, patch_artist=True)
+        for patch, p in zip(bp4["boxes"], personas):
+            patch.set_facecolor(p_colors.get(p, "grey")); patch.set_alpha(0.7)
+        axes[3].axhline(0.5, color="red", linestyle="--", alpha=0.5, label="drift warning (0.50)")
+        axes[3].set_title("Semantic Similarity vs Template by Persona")
+        axes[3].set_ylabel("Cosine similarity (higher = less drift)")
         axes[3].set_ylim(0, 1.05)
-        axes[3].axhline(1.0, color="grey", linestyle="--", alpha=0.3)
         axes[3].legend(fontsize=8)
     else:
-        axes[3].text(0.5, 0.5, "No text quality data",
-                     ha="center", va="center", transform=axes[3].transAxes)
         axes[3].axis("off")
 
     plt.tight_layout()
@@ -664,20 +657,17 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
     lines.append("")
     lines.append("| Metric | Value |")
     lines.append("|---|---|")
-    lines.append(f"| Total rows evaluated | {len(df)} |")
+    lines.append(f"| Total windows evaluated | {len(df)} |")
     lines.append(f"| Datasets | {', '.join(sorted(df['dataset'].unique()))} |")
-    lines.append(f"| Verbalizers | {', '.join(sorted(df['verbalizer_type'].unique()))} |")
     lines.append(f"| Mean NLI consistency | {df['overall_consistency'].mean():.4f} |")
-    lines.append(f"| PASS rate (≥ 0.70) | {df['is_consistent'].mean()*100:.1f}% |")
-    if "fact_recall" in df.columns:
-        lines.append(f"| Mean fact recall | {df['fact_recall'].mean():.4f} |")
-    if "feature_completeness" in df.columns:
-        lines.append(f"| Mean feature completeness | {df['feature_completeness'].mean():.4f} |")
+    lines.append(f"| PASS rate (\u2265 0.70) | {df['is_consistent'].mean()*100:.1f}% |")
+    if "semantic_vs_template" in df.columns:
+        lines.append(f"| Mean semantic similarity vs template | {df['semantic_vs_template'].mean():.4f} |")
     lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
-    lines.append(f"| Mean First-Step MASE | {df['mase_first'].mean():.4f} |")
     lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
     lines.append(f"| Mean coverage | {df['coverage_pct'].mean():.1f}% |")
     lines.append("")
+
 
     lines.append("## 2. Forecast Accuracy by Dataset")
     lines.append("")
@@ -693,40 +683,35 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
     lines.append("")
 
-    lines.append("## 3. NLI Consistency by Verbalizer Type")
+    lines.append("## 3. NLI Consistency by Persona and Dataset")
     lines.append("")
-    lines.append("| Verbalizer | Mean | Std | PASS rate |")
-    lines.append("|---|---|---|---|")
-    for vt, grp in df.groupby("verbalizer_type"):
+    lines.append("| Persona | Dataset | Mean NLI | Std | PASS rate |")
+    lines.append("|---|---|---|---|---|")
+    group_cols = [c for c in ("persona", "dataset") if c in df.columns]
+    for keys, grp in df.groupby(group_cols):
+        key_strs = [keys] if isinstance(keys, str) else list(keys)
         lines.append(
-            f"| {vt} | {grp['overall_consistency'].mean():.4f} "
+            f"| {' | '.join(str(k) for k in key_strs)} "
+            f"| {grp['overall_consistency'].mean():.4f} "
             f"| {grp['overall_consistency'].std():.4f} "
             f"| {grp['is_consistent'].mean()*100:.1f}% |"
         )
     lines.append("")
 
-    has_recall = "fact_recall" in df.columns
-    has_compl  = "feature_completeness" in df.columns
-    if has_recall or has_compl:
-        lines.append("## 4. Text Quality by Verbalizer Type")
+
+    if "semantic_vs_template" in df.columns:
+        lines.append("## 4. Semantic Similarity vs Template by Persona")
         lines.append("")
-        header = "| Verbalizer |"
-        sep    = "|---|"
-        if has_recall:
-            header += " Fact Recall (mean) |"
-            sep    += "---|"
-        if has_compl:
-            header += " Feature Completeness (mean) |"
-            sep    += "---|"
-        lines.append(header)
-        lines.append(sep)
-        for vt, grp in df.groupby("verbalizer_type"):
-            row = f"| {vt} |"
-            if has_recall:
-                row += f" {grp['fact_recall'].mean():.4f} |"
-            if has_compl:
-                row += f" {grp['feature_completeness'].mean():.4f} |"
-            lines.append(row)
+        lines.append("| Persona | Dataset | Mean | Std | Min |")
+        lines.append("|---|---|---|---|---|")
+        group_cols = [c for c in ("persona", "dataset") if c in df.columns]
+        for keys, grp in df.groupby(group_cols):
+            key_strs = [keys] if isinstance(keys, str) else list(keys)
+            col = grp["semantic_vs_template"].dropna()
+            lines.append(
+                f"| {' | '.join(str(k) for k in key_strs)} "
+                f"| {col.mean():.4f} | {col.std():.4f} | {col.min():.4f} |"
+            )
         lines.append("")
 
     if "top_covariate" in df.columns and df["top_covariate"].notna().any():
@@ -740,51 +725,6 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
         lines.append("")
 
-    judge_path = save_dir / "judge_results.csv"
-    if judge_path.exists():
-        try:
-            jdf = pd.read_csv(judge_path)
-            if not jdf.empty:
-                lines.append("## 6. LLM Judge — Human Preference Win Rates")
-                lines.append("")
-                lines.append("| Config | Wins | Ties | Losses | Win Rate |")
-                lines.append("|---|---|---|---|---|")
-                all_configs = set(jdf["config_a"].tolist() + jdf["config_b"].tolist())
-                lines.append("| Config | Wins | Ties | Losses | Win Rate | Mean Preference |")
-                lines.append("|---|---|---|---|---|---|")
-                all_configs = set(jdf["config_a"].tolist() + jdf["config_b"].tolist())
-                for cfg in sorted(all_configs):
-                    wins = int(
-                        ((jdf["config_a"] == cfg) & (jdf["winner"] == "A")).sum()
-                        + ((jdf["config_b"] == cfg) & (jdf["winner"] == "B")).sum()
-                    )
-                    ties = int(jdf[
-                        ((jdf["config_a"] == cfg) | (jdf["config_b"] == cfg))
-                        & (jdf["winner"] == "tie")
-                    ].shape[0])
-                    total = int(
-                        ((jdf["config_a"] == cfg) | (jdf["config_b"] == cfg)).sum()
-                    )
-                    losses = total - wins - ties
-                    rate = wins / total * 100 if total > 0 else 0.0
-                    # Extract mean human_preference score from the JSON blobs
-                    pref_scores: list[float] = []
-                    for _, row in jdf.iterrows():
-                        try:
-                            if row["config_a"] == cfg:
-                                pref_scores.append(json.loads(row["scores_a"])["human_preference"])
-                            elif row["config_b"] == cfg:
-                                pref_scores.append(json.loads(row["scores_b"])["human_preference"])
-                        except (KeyError, ValueError, TypeError):
-                            pass
-                    mean_pref = sum(pref_scores) / len(pref_scores) if pref_scores else float("nan")
-                    lines.append(
-                        f"| {cfg} | {wins} | {ties} | {losses} | {rate:.1f}% "
-                        f"| {mean_pref:.2f}/5 |"
-                    )
-                lines.append("")
-        except Exception:
-            pass
 
     lines.append("## Visualizations")
     lines.append("")
@@ -798,15 +738,15 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
 
 def print_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 65)
-    print("  EVALUATION SUMMARY")
+    print("  EVALUATION SUMMARY (analyst vs executive)")
     print("=" * 65)
-    print(df.groupby("dataset")[["mase", "mase_first", "fair_mase", "coverage_pct"]].mean().round(4))
-    print("\n  NLI Consistency by verbalizer:")
-    print(df.groupby("verbalizer_type")["overall_consistency"].agg(["mean", "std"]).round(4))
-    text_quality_cols = [c for c in ("fact_recall", "feature_completeness") if c in df.columns]
-    if text_quality_cols:
-        print("\n  Text quality by verbalizer:")
-        print(df.groupby("verbalizer_type")[text_quality_cols].mean().round(4))
+    print(df.groupby("dataset")[["mase", "fair_mase", "coverage_pct"]].mean().round(4))
+    print("\n  NLI Consistency by persona:")
+    group_col = "persona" if "persona" in df.columns else "dataset"
+    print(df.groupby(group_col)[["overall_consistency"]].agg(["mean", "std"]).round(4))
+    if "semantic_vs_template" in df.columns:
+        print("\n  Semantic similarity vs template by persona:")
+        print(df.groupby(group_col)[["semantic_vs_template"]].agg(["mean", "std", "min"]).round(4))
     print()
 
 
@@ -815,28 +755,22 @@ def print_summary(df: pd.DataFrame) -> None:
 def main(
     dataset_keys: Optional[List[str]] = None,
     mode_key: str = "dev",
-    verbalizer_names: Optional[List[str]] = None,
     save_traces: bool = False,
-    use_judge: bool = False,
     output_dir: Optional[Path | str] = None,
 ) -> None:
-    """Run evaluation and save all outputs."""
+    """Run LLM evaluation and save all outputs."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-    
+
     out_path = Path(output_dir) if output_dir else EVAL_DIR
     out_path.mkdir(parents=True, exist_ok=True)
 
     if dataset_keys is None:
         dataset_keys = ["etth1", "ettm1", "weather", "sp500"]
-    if verbalizer_names is None:
-        verbalizer_names = ["template", "llm"]
 
     df = run_evaluation(
         dataset_keys=dataset_keys,
         mode_key=mode_key,
-        verbalizer_names=verbalizer_names,
         save_traces=save_traces,
-        use_judge=use_judge,
         output_dir=out_path,
     )
 

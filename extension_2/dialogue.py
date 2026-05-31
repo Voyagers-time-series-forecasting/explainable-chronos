@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,8 +36,8 @@ from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.config import PipelineConfig
 from extension_1.evaluation.scoring import NLIConsistencyScorer
 from extension_1.verbalization.template import TemplateVerbalizer
-from extension_2.intent_parser import IntentParser, ParsedIntent
-from extension_2.input_modifier import InputModifier, ModificationResult
+from extension_2.parsing import IntentParser, ParsedIntent
+from extension_2.modification import InputModifier, ModificationResult
 from shared.forecast_provider import ChronosForecastProvider
 
 logger = logging.getLogger(__name__)
