@@ -13,6 +13,7 @@ Override by passing ``model_id`` explicitly.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import threading
 from typing import Any
@@ -33,62 +34,76 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = (
-    "You are a quantitative analyst writing concise, professional forecast summaries. "
-    "You receive structured numerical facts about a time-series forecast and write a "
-    "clear, fluent summary directly from those facts.\n\n"
-    "ENTAILMENT RULE (critical):\n"
-    "Every sentence you write will be verified by an NLI model that checks whether "
-    "the numerical facts ENTAIL your sentence. To maximise entailment:\n"
-    "  - Each sentence must be fully and directly supported by the stated facts.\n"
-    "  - Use the exact direction words (rising/falling/flat), magnitude words "
-    "(sharply/moderately/slightly), and numerical values given in the facts.\n"
-    "  - One sentence per feature (trend, uncertainty, risk, covariate). "
-    "Do not merge features that come from different fact groups.\n"
-    "  - Do NOT add causal interpretations, domain knowledge, or any claim "
-    "not directly stated in the facts. Such additions cannot be entailed and "
-    "will be flagged as contradictions.\n"
-    "  - Do NOT hedge with 'may', 'might', 'could' unless the fact itself states uncertainty.\n"
-    "CONSTRAINTS:\n"
-    "  - 3 to 5 sentences maximum. Be concise.\n"
-    "  - Never change the sign or magnitude of a covariate impact percentage."
+    "You are a data analyst explaining a forecast to someone with no statistics background — "
+    "think of a business manager, a shop owner, or a curious non-expert. "
+    "Your job is to turn technical forecast results into a clear, helpful explanation that anyone can understand.\n\n"
+    "HOW TO WRITE:\n"
+    "  - Use plain, everyday language. Avoid jargon like 'quantile', 'P10/P90', 'slope', or 'attribution'.\n"
+    "  - When you mention a number, briefly say what it means in plain terms.\n"
+    "    For example: instead of 'slope +0.18', say 'values are expected to grow a little each day'.\n"
+    "  - If there is a key driver (covariate), explain its role simply, like: "
+    "'The main thing pushing this up is temperature, which accounts for about 45% of the expected change'.\n"
+    "  - If there is uncertainty, explain it simply: "
+    "'We are reasonably confident about the direction, though the exact numbers could be higher or lower'.\n"
+    "  - Keep sentences short and varied in structure — avoid repeating the same pattern.\n\n"
+    "ACCURACY RULES:\n"
+    "  - Never reverse the trend direction or change the sign of any factor's influence.\n"
+    "  - Never invent numbers, causes, or outcomes not stated in the facts.\n"
+    "  - Do not speculate about why the trend is happening — only describe what the model shows.\n\n"
+    "LENGTH: Write 3 to 5 short, clear sentences."
 )
 
 # ---------------------------------------------------------------------------
-# Few-shot examples: FACTS → SUMMARY (no draft)
+# Style hints — injected randomly to vary discourse structure across calls
+# ---------------------------------------------------------------------------
+
+_STYLE_HINTS: list[str] = [
+    "Start with the overall outlook (is it good news or bad news?), then add detail.",
+    "Lead with the most important finding, then explain what it means for the reader.",
+    "Begin by describing what is expected to happen, then mention how confident we are.",
+    "If there is a key driver, mention it first and explain its role, then describe the trend.",
+    "Open with the confidence level of the forecast, then describe what is expected.",
+    "Tell a short story: what is happening, why (if a driver is given), and what to watch out for.",
+]
+
+# ---------------------------------------------------------------------------
+# Few-shot examples: FACTS → SUMMARY (non-technical style)
 # ---------------------------------------------------------------------------
 
 _FEW_SHOT_BLOCK = """\
-## Example 1  [lead with covariate, then trend, then uncertainty, then risk]
+## Example 1
 FACTS:
   trend_direction: rising | trend_magnitude: sharply | trend_slope: +0.1842 | horizon: 96
   uncertainty_level: moderate | uncertainty_trend: stable
   downside_risk: false | upside_potential: true
   covariate: temperature | direction: positive | impact_pct: 45.2
-SUMMARY: Temperature is the dominant positive driver, contributing 45.2% of the total attribution. \
-Over the next 96 periods the median forecast rises sharply, with a slope of +0.1842 per period. \
-Prediction intervals are moderately wide and remain stable throughout the horizon. \
-The P90 quantile signals meaningful upside potential.
+SUMMARY: Temperature is the biggest factor here, responsible for roughly 45% of the expected change — \
+when temperatures rise, this forecast rises with it. \
+Overall, values are expected to climb noticeably over the coming 96 periods. \
+The forecast is reasonably confident: our range of possible outcomes is moderate and stays steady throughout. \
+There is a real chance things could end up even higher than expected, so it is worth keeping an eye on the upside.
 
-## Example 2  [lead with uncertainty/risk, then trend, no covariate]
+## Example 2
 FACTS:
   trend_direction: falling | trend_magnitude: moderately | trend_slope: -0.0934 | horizon: 96
   uncertainty_level: high | uncertainty_trend: widening
   downside_risk: true | upside_potential: false
   regime_shift: true | regime_shift_pvalue: 0.0031
-SUMMARY: Prediction intervals are wide and expanding over the 96-period horizon, reflecting rapidly growing uncertainty. \
-The P10 quantile flags significant downside risk, with lower bounds exceeding 20% below current levels. \
-Against this backdrop, the median forecast falls moderately (slope: −0.0934 per period). \
-A statistically significant structural break is detected near the forecast midpoint (p = 0.0031).
+SUMMARY: The forecast points to a gradual decline over the next 96 periods, though the picture is uncertain — \
+the range of possible outcomes is wide and gets wider the further out we look. \
+There is a notable risk of things turning out worse than the central estimate, so caution is advised. \
+The model also picked up a meaningful shift in behaviour around the middle of the horizon, \
+suggesting the pattern may have changed, which adds to the uncertainty.
 
-## Example 3  [compact form — trend and uncertainty merged, then covariate]
+## Example 3
 FACTS:
   trend_direction: flat | trend_magnitude: slightly | trend_slope: +0.0021 | horizon: 96
   uncertainty_level: low | uncertainty_trend: narrowing
   downside_risk: false | upside_potential: false
   covariate: wind | direction: negative | impact_pct: 38.1
-SUMMARY: Over the next 96 periods, values are projected to remain essentially flat (slope: +0.0021), \
-with narrow and converging prediction intervals that indicate high forecast confidence. \
-Wind is the dominant negative driver, accounting for 38.1% of the total attribution.
+SUMMARY: The forecast is fairly stable — values are expected to stay roughly the same over the next 96 periods. \
+We are quite confident in this outlook: the range of possible outcomes is narrow and getting narrower over time. \
+Wind is the main factor pulling things down, contributing about 38% of the total influence on this forecast.
 """
 
 
@@ -169,9 +184,11 @@ class LLMVerbalizer:
         with torch.inference_mode():
             outputs = self._model.generate(
                 **inputs,
-                max_new_tokens=512,
-                do_sample=False,          # greedy — maximises factual fidelity
-                repetition_penalty=1.15,
+                max_new_tokens=300,
+                do_sample=True,
+                temperature=0.75,
+                top_p=0.92,
+                repetition_penalty=1.1,
             )
 
         response = self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
@@ -272,14 +289,14 @@ class LLMVerbalizer:
             for s, p, o in self.build_grounding_triples(features, attribution)
         )
 
+        style_hint = random.choice(_STYLE_HINTS)
         return (
-            "Write a forecast summary from the structured facts below. "
-            "Each sentence must be directly and fully entailed by the stated facts — "
-            "use the exact direction, magnitude, and numerical values given.\n\n"
+            "Explain the following forecast results to a non-technical reader.\n"
+            f"Style guidance: {style_hint}\n\n"
             + _FEW_SHOT_BLOCK
             + "\n---\n\n"
-            "## Now write a summary for:\n"
+            "## Now write an explanation for:\n"
             f"FACTS:\n{facts_str}\n"
-            f"GROUNDING TRIPLES: {triples_str}\n"
-            "SUMMARY:"
+            f"KEY DRIVERS: {triples_str}\n"
+            "EXPLANATION:"
         )

@@ -46,6 +46,13 @@ ASYMMETRY_THRESHOLD: float = 0.10  # |asym| < this → "symmetric"
 NLI_MODEL_NAME: str = "facebook/bart-large-mnli"
 CONSISTENCY_THRESHOLD: float = 0.70
 
+# ────────────────────── QA faithfulness scorer ──────────────────────────
+# Extractive QA model used to check factual slot coverage.
+# roberta-base-squad2 is small (~500 MB), fast on CPU, and accurate.
+QA_MODEL_NAME: str = "deepset/roberta-base-squad2"
+QA_CORRECT_THRESHOLD: float = 0.50    # per-slot semantic match threshold
+QA_FAITHFUL_THRESHOLD: float = 0.60   # mean coverage threshold
+
 # NLI score decomposition weights (entailment + neutral + contradiction = 1)
 NLI_NEUTRAL_WEIGHT: float = 0.60
 NLI_CONTRADICTION_WEIGHT: float = 0.40
