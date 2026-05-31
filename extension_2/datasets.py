@@ -127,6 +127,43 @@ EXAMPLE_SET: List[TestCase] = [
     TestCase("Can you drop the social media variable?", "remove_covariate", "Remove via 'drop' + alias 'social media variable'", expected_covariate="social_media_mentions"),
     TestCase("Triple the competitor promotion index.", "scale_covariate", "Scale with word-factor 'triple'", expected_covariate="competitor_promotion_index"),
     TestCase("What are the P10 and P90 bounds?", "confidence_query", "Explicit quantile names"),
+
+    # ── additional examples (30) ─────────────────────────────────────
+    # remove_covariate (6)
+    TestCase("What happens if we ignore the social media data?", "remove_covariate", "Remove social_media_mentions via 'ignore'", expected_covariate="social_media_mentions"),
+    TestCase("Omit the holiday effect from the model.", "remove_covariate", "Remove holiday_proximity via 'omit'", expected_covariate="holiday_proximity"),
+    TestCase("Take price discounts out of the equation.", "remove_covariate", "Remove price_discount_percentage with idiomatic phrasing", expected_covariate="price_discount_percentage"),
+    TestCase("Forecast without accounting for weather.", "remove_covariate", "Remove weather_temperature with 'without accounting for'", expected_covariate="weather_temperature"),
+    TestCase("Suppress the competitor promotion variable.", "remove_covariate", "Remove competitor_promotion_index via 'suppress'", expected_covariate="competitor_promotion_index"),
+    TestCase("What if random noise weren't included?", "remove_covariate", "Remove random_sensor_noise with hypothetical phrasing", expected_covariate="random_sensor_noise"),
+    # scale_covariate (6)
+    TestCase("Increase marketing spend by 40%.", "scale_covariate", "Scale marketing_spend up by 40%", expected_covariate="marketing_spend"),
+    TestCase("What if shipping delays were cut by half?", "scale_covariate", "Scale shipping_delay_hours to 0.5x", expected_covariate="shipping_delay_hours"),
+    TestCase("Grow social media mentions by 60%.", "scale_covariate", "Scale social_media_mentions up by 60%", expected_covariate="social_media_mentions"),
+    TestCase("What if website traffic dropped 10%?", "scale_covariate", "Scale website_traffic down by 10%", expected_covariate="website_traffic"),
+    TestCase("Apply a 20% reduction to the competitor index.", "scale_covariate", "Scale competitor_promotion_index down by 20%", expected_covariate="competitor_promotion_index"),
+    TestCase("Boost previous day sales by 15%.", "scale_covariate", "Scale previous_day_sales up by 15%", expected_covariate="previous_day_sales"),
+    # change_horizon (6)
+    TestCase("Show me predictions for the next 100 hours.", "change_horizon", "Change horizon to 100 hours", expected_horizon=100),
+    TestCase("I need a 3-day forecast.", "change_horizon", "Change horizon to 3 days", expected_horizon=72),
+    TestCase("What's the outlook for the next 6 months?", "change_horizon", "Change horizon to 6 months", expected_horizon=4320),
+    TestCase("Run a 500-step forecast.", "change_horizon", "Change horizon to 500 steps", expected_horizon=500),
+    TestCase("Give me 1 week ahead.", "change_horizon", "Change horizon to 1 week", expected_horizon=168),
+    TestCase("Forecast for the next 2 weeks.", "change_horizon", "Change horizon to 2 weeks", expected_horizon=336),
+    # confidence_query (6)
+    TestCase("What's the error margin on this?", "confidence_query", "Confidence via error margin phrasing"),
+    TestCase("How spread out are the predictions?", "confidence_query", "Confidence via spread phrasing"),
+    TestCase("Tell me the optimistic and pessimistic scenarios.", "confidence_query", "Confidence via scenario phrasing"),
+    TestCase("Are the prediction bounds tightening or widening?", "confidence_query", "Confidence via bounds trend"),
+    TestCase("What level of confidence should I assign to this?", "confidence_query", "Confidence as an assignment question"),
+    TestCase("How much should I rely on this forecast?", "confidence_query", "Confidence via reliability phrasing"),
+    # counterfactual (6)
+    TestCase("What if marketing spend had been higher last month?", "counterfactual", "Historical counterfactual on marketing_spend", expected_covariate="marketing_spend"),
+    TestCase("Suppose sales last week had been 30% lower.", "counterfactual", "Historical counterfactual on previous_day_sales", expected_covariate="previous_day_sales"),
+    TestCase("What would the result have been with double the website traffic last quarter?", "counterfactual", "Historical counterfactual on website_traffic", expected_covariate="website_traffic"),
+    TestCase("If price discounts were halved a month ago, how would that have changed things?", "counterfactual", "Historical counterfactual on price_discount_percentage", expected_covariate="price_discount_percentage"),
+    TestCase("What if there had been no social media activity last week?", "counterfactual", "Historical counterfactual on social_media_mentions", expected_covariate="social_media_mentions"),
+    TestCase("How would higher shipping delays last month have changed the outcome?", "counterfactual", "Historical counterfactual on shipping_delay_hours", expected_covariate="shipping_delay_hours"),
 ]
 
 # ── Test set (40 queries) ─────────────────────────────────────────────
@@ -185,6 +222,32 @@ TEST_SET: List[TestCase] = [
     TestCase("How stable is the forecast under current conditions?", "confidence_query", "Outlier: stability framing, no P10/P90 or confidence keyword"),
     TestCase("Competitor index up 2x — run it.", "scale_covariate", "Outlier: telegraphic style, no full sentence structure", expected_covariate="competitor_promotion_index"),
     TestCase("Peek at the next 6 hours.", "change_horizon", "Outlier: 'peek' as forecast verb, short horizon edge case", expected_horizon=6),
+
+    # ── additional standard cases (7) ────────────────────────────────
+    TestCase("Remove the marketing covariate.", "remove_covariate", "Standard: direct remove with intent keyword", expected_covariate="marketing_spend"),
+    TestCase("Increase website traffic by 35%.", "scale_covariate", "Standard: clear percentage scale", expected_covariate="website_traffic"),
+    TestCase("I want a 20-day forecast.", "change_horizon", "Standard: digit + day unit", expected_horizon=480),
+    TestCase("What's the P90 for this forecast?", "confidence_query", "Standard: direct quantile request"),
+    TestCase("Show me 36 hours ahead.", "change_horizon", "Standard: digit + hour unit", expected_horizon=36),
+    TestCase("Multiply the shipping delays by 1.5.", "scale_covariate", "Standard: explicit multiplier phrasing", expected_covariate="shipping_delay_hours"),
+    TestCase("What if competitor promotions hadn't happened last quarter?", "counterfactual", "Standard: historical counterfactual with clear past-tense marker", expected_covariate="competitor_promotion_index"),
+
+    # ── additional ambiguous cases (7) ───────────────────────────────
+    TestCase("What happens if we ditch the weather input?", "remove_covariate", "Ambiguous: 'ditch' is informal, 'input' indirect alias", expected_covariate="weather_temperature"),
+    TestCase("Slash shipping delays by 40%.", "scale_covariate", "Ambiguous: 'slash' implies decrease but is not a standard scale keyword", expected_covariate="shipping_delay_hours"),
+    TestCase("Look ahead 4 weeks.", "change_horizon", "Ambiguous: 'look ahead' could parse as confidence_query", expected_horizon=672),
+    TestCase("Am I right to trust this model?", "confidence_query", "Ambiguous: trust framing, no forecast-domain keywords"),
+    TestCase("What if social media influence had been negligible?", "counterfactual", "Ambiguous: 'had been negligible' could look like remove_covariate", expected_covariate="social_media_mentions"),
+    TestCase("Scale the noise factor down by 50%.", "scale_covariate", "Ambiguous: 'noise factor' as alias for random_sensor_noise", expected_covariate="random_sensor_noise"),
+    TestCase("What if price cuts had been more aggressive last year?", "counterfactual", "Ambiguous: 'price cuts' alias + 'had been' past tense + scale trigger", expected_covariate="price_discount_percentage"),
+
+    # ── additional outlier cases (6) ─────────────────────────────────
+    TestCase("Mute the holiday signal.", "remove_covariate", "Outlier: 'mute' as remove verb, no pattern match", expected_covariate="holiday_proximity"),
+    TestCase("How much wiggle room is there in these numbers?", "confidence_query", "Outlier: very informal, no forecast vocabulary"),
+    TestCase("Stretch the forecast out to 3 months.", "change_horizon", "Outlier: 'stretch out' as horizon verb", expected_horizon=2160),
+    TestCase("What would a world without competitor promotions look like?", "remove_covariate", "Outlier: rhetorical framing, very indirect", expected_covariate="competitor_promotion_index"),
+    TestCase("Fire up the marketing budget by 80%.", "scale_covariate", "Outlier: 'fire up' slang + 'marketing budget' alias", expected_covariate="marketing_spend"),
+    TestCase("How sure are we about the direction of this forecast?", "confidence_query", "Outlier: 'direction' + 'how sure', non-standard confidence framing"),
 ]
 
 # ── Multi-turn test set ────────────────────────────────────────────────
