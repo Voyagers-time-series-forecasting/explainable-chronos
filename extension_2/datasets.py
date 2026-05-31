@@ -129,11 +129,10 @@ EXAMPLE_SET: List[TestCase] = [
     TestCase("What are the P10 and P90 bounds?", "confidence_query", "Explicit quantile names"),
 ]
 
-# ── Test set (25 queries) ─────────────────────────────────────────────
+# ── Test set (40 queries) ─────────────────────────────────────────────
 # Written after all patterns and the BERT pool were frozen.
 # Never seen during development. This is the reported evaluation set.
-# Includes original held-out cases plus ambiguous and outlier queries
-# designed to stress-test Tier 2 (BERT) and Tier 3 (LLM).
+# Breakdown: 10 original held-out + 16 ambiguous + 14 outlier.
 TEST_SET: List[TestCase] = [
     # ── original held-out cases (10) ─────────────────────────────────
     TestCase("How much uncertainty surrounds this prediction?", "confidence_query", "Uncertainty question without the word 'confidence'"),
