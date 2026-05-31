@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # System prompt
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_ANALYST = (
     "You are a quantitative analyst writing concise, professional forecast summaries. "
     "You receive a draft description of a time-series forecast and rewrite it for clarity "
     "and fluency while preserving every numerical value and factual claim exactly as stated.\n"
@@ -43,11 +43,22 @@ _SYSTEM_PROMPT = (
     "3. NEVER change the direction (positive/negative) or percentages of covariate impacts."
 )
 
+_SYSTEM_PROMPT_EXECUTIVE = (
+    "You are a communication specialist writing plain-language forecast summaries for "
+    "non-technical decision-makers who have no statistics background.\n"
+    "CRITICAL CONSTRAINTS:\n"
+    "1. Avoid jargon: replace 'P10/P50/P90' with 'lower/central/upper estimate', "
+    "'prediction interval' with 'forecast range', 'regime shift' with 'notable change in pattern'.\n"
+    "2. Keep every numerical value exactly as given — do not round or approximate percentages.\n"
+    "3. Maximum 3-4 sentences. Focus on what matters for a business decision.\n"
+    "4. Do NOT add causal claims or speculation not present in the draft."
+)
+
 # ---------------------------------------------------------------------------
 # Few-shot examples (cover three representative scenarios)
 # ---------------------------------------------------------------------------
 
-_FEW_SHOT_BLOCK = """\
+_FEW_SHOT_ANALYST = """\
 ## Example 1
 DRAFT: The P50 forecast is rising sharply. The prediction interval is moderate and stable. \
 Upside potential is flagged. Temperature has a positive effect on the forecast, contributing \
@@ -74,6 +85,36 @@ narrow and stable, indicating high forecast confidence. Wind is the dominant neg
 accounting for 38.1% of the total covariate attribution.
 """
 
+_FEW_SHOT_EXECUTIVE = """\
+## Example 1
+DRAFT: The P50 forecast is rising sharply. The prediction interval is moderate and stable. \
+Upside potential is flagged. Temperature has a positive effect on the forecast, contributing \
+45.2% of the total attribution.
+REWRITE: Values are expected to rise strongly over the coming period, with a real chance of an \
+even higher outcome. The forecast is moderately confident. Temperature is the main factor \
+driving this increase, responsible for 45.2% of what shapes this forecast.
+
+## Example 2
+DRAFT: The P50 forecast is falling moderately. The prediction interval is high and widening. \
+Downside risk is flagged. A regime shift was detected.
+REWRITE: Values are expected to gradually decline, and there is considerable uncertainty — the \
+actual outcome could be significantly worse than the central estimate. The model also detected \
+a notable change in behaviour midway through the forecast period, which adds further caution.
+
+## Example 3
+DRAFT: The P50 forecast is flat. The prediction interval is low and stable. Wind has a negative \
+effect on the forecast, contributing 38.1% of the total attribution.
+REWRITE: Little change is expected over the coming period, and the model is quite confident in \
+this stability. Wind is the main factor holding values back, accounting for 38.1% of the total \
+driver influence.
+"""
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible aliases
+# ---------------------------------------------------------------------------
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_ANALYST
+_FEW_SHOT_BLOCK = _FEW_SHOT_ANALYST
+
 
 class LLMVerbalizer:
     """LLM-refined verbalization with few-shot prompting.
@@ -94,12 +135,19 @@ class LLMVerbalizer:
         self,
         template_verbalizer: TemplateVerbalizer | None = None,
         model_id: str | None = None,
+        persona: Literal["analyst", "executive"] = "analyst",
     ) -> None:
         self.template_verbalizer = template_verbalizer or TemplateVerbalizer()
         self.model_id = model_id or select_llm_model()
+        self.persona = persona
         self._processor: Any = None
         self._model: Any = None
         self._lock = threading.Lock()
+
+    def share_model_from(self, other: "LLMVerbalizer") -> None:
+        """Reuse an already-loaded model and tokenizer from *other* (avoids double loading)."""
+        self._model = other._model
+        self._processor = other._processor
 
     def _load_model(self) -> None:
         """Load model on first call (thread-safe lazy initialisation)."""
@@ -130,8 +178,9 @@ class LLMVerbalizer:
         template_result = self.template_verbalizer.verbalize(features, attribution)
         prompt = self.build_refinement_prompt(features, template_result, attribution)
 
+        sys_prompt = _SYSTEM_PROMPT_EXECUTIVE if self.persona == "executive" else _SYSTEM_PROMPT_ANALYST
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt},
         ]
         text = self._processor.apply_chat_template(
@@ -196,10 +245,10 @@ class LLMVerbalizer:
         ]
         if attribution:
             for attr in attribution.attributions[: attribution.top_k]:
-                verb = "increases"
+                direction = getattr(attr, "direction", "positive")
                 triples.append((
                     f"{attr.name}_covariate",
-                    f"{verb}_forecast_by",
+                    f"has_{direction}_effect_contributing",
                     f"{attr.relative_impact_pct:.1f}%",
                 ))
         return triples
@@ -236,15 +285,22 @@ class LLMVerbalizer:
             if tpf_sentence:
                 temporal_line = f"TEMPORAL_FOCUS: {tpf_sentence}\n"
 
+        few_shot = _FEW_SHOT_EXECUTIVE if self.persona == "executive" else _FEW_SHOT_ANALYST
+        persona_constraint = (
+            "CONSTRAINT: Use plain, non-technical language suitable for a business audience. "
+            "Keep every number exactly as stated. Maximum 3-4 sentences.\n"
+            if self.persona == "executive"
+            else "CONSTRAINT: Be extremely concise. Do not add any extra commentary.\n"
+        )
         return (
             "Rewrite the DRAFT below into fluent professional prose. "
             "Preserve every number and factual claim exactly. "
             "Do not add new facts or causal interpretations.\n\n"
-            + _FEW_SHOT_BLOCK
+            + few_shot
             + "\n---\n\n"
             "## Now rewrite the following\n"
-            "CONSTRAINT: Be extremely concise. Do not add any extra commentary.\n"
-            f"NUMERICAL FACTS: {facts}\n"
+            + persona_constraint
+            + f"NUMERICAL FACTS: {facts}\n"
             f"GROUNDING: {triples_str}\n"
             f"{traj_line}"
             f"{temporal_line}"

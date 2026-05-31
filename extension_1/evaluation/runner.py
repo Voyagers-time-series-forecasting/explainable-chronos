@@ -320,27 +320,33 @@ def compute_accuracy(
 
 # ──────────────── pipeline builder ────────────────────────────────────
 
-def build_pipeline(
+def build_pipelines(
     seed: int,
     config: PipelineConfig,
-) -> Optional[VerbalizationPipeline]:
-    """Build the LLM verbalization pipeline (only evaluated verbalizer).
-
-    The template is embedded inside LLMVerbalizer; its output is stored in
-    ``VerbalizationResult.draft_summary`` for semantic similarity scoring.
-    """
+) -> list[tuple[str, VerbalizationPipeline]]:
+    """Build analyst and executive LLM pipelines sharing one loaded model."""
     provider = ChronosForecastProvider(enable_attention=True)
+    nli_scorer = NLIConsistencyScorer()
     try:
-        llm = LLMVerbalizer(template_verbalizer=TemplateVerbalizer(seed=seed))
-        return VerbalizationPipeline(
-            forecast_provider=provider,
-            verbalizer=llm,
-            scorer=NLIConsistencyScorer(),
-            config=config,
+        analyst_llm = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            persona="analyst",
         )
+        analyst_llm._load_model()  # eager load so executive can reuse it
+
+        exec_llm = LLMVerbalizer(
+            template_verbalizer=TemplateVerbalizer(seed=seed),
+            persona="executive",
+        )
+        exec_llm.share_model_from(analyst_llm)
+
+        return [
+            ("analyst", VerbalizationPipeline(provider, analyst_llm, nli_scorer, config)),
+            ("executive", VerbalizationPipeline(provider, exec_llm, nli_scorer, config)),
+        ]
     except Exception as e:
-        logger.warning("Could not initialize LLMVerbalizer: %s", e)
-        return None
+        logger.warning("Could not initialise LLM pipelines: %s", e)
+        return []
 
 
 def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
@@ -366,14 +372,14 @@ def run_evaluation(
 
     mode = EVAL_MODES[mode_key]
     config = PipelineConfig(seed=seed)
-    pipeline = build_pipeline(seed, config)
-    if pipeline is None:
-        logger.error("LLM pipeline unavailable — aborting evaluation.")
+    pipelines = build_pipelines(seed, config)
+    if not pipelines:
+        logger.error("No LLM pipelines available — aborting evaluation.")
         return pd.DataFrame()
 
     sem_scorer = SemanticSimilarityScorer()
-
-    logger.info("LLM evaluation | mode=%s | datasets=%s", mode_key, dataset_keys)
+    logger.info("LLM evaluation | mode=%s | datasets=%s | personas=%s",
+                mode_key, dataset_keys, [p for p, _ in pipelines])
     logger.info(mode.description)
 
     records: List[Dict[str, Any]] = []
@@ -401,71 +407,64 @@ def run_evaluation(
             cov_set = _make_covariate_set(past_cov)
             future_cov_set = _make_covariate_set(future_cov)
 
-            try:
-                result = pipeline.run(
-                    history,
-                    horizon=len(future),
-                    covariates=cov_set,
-                    future_covariates=future_cov_set,
-                )
-            except Exception as e:
-                logger.warning("Window %d [%s] failed: %s", w_idx, spec.name, e)
-                continue
-
-            accuracy = compute_accuracy(result.forecast, future, history)
-
-            # Semantic similarity: LLM output vs template draft (stored internally)
-            template_text = getattr(result.verbalization, "draft_summary", "") or ""
-            semantic_sim = sem_scorer.score(result.verbalization.summary, template_text)
-
-            record: Dict[str, Any] = {
-                "dataset": spec.name,
-                "window_idx": w_idx,
-                "history_length": len(history),
-                "horizon": len(future),
-                "overall_consistency": result.consistency_report.overall_score,
-                "is_consistent": result.consistency_report.is_consistent,
-                "contradiction_rate": result.consistency_report.contradiction_rate,
-                "semantic_vs_template": semantic_sim,
-                "num_sentences": len(result.verbalization.sentences),
-                "mase": accuracy["mase"],
-                "mase_first": accuracy["mase_first"],
-                "fair_mase": accuracy["fair_mase"],
-                "coverage_pct": accuracy["coverage_pct"],
-                "interval_sharpness": accuracy["interval_sharpness"],
-                "rst_relations": ",".join(result.verbalization.rst_relations),
-            }
-
-            past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
-            record["top_covariate"] = past_attrs[0].name if past_attrs else None
-            record["top_covariate_impact_pct"] = past_attrs[0].relative_impact_pct if past_attrs else None
-
-            records.append(record)
-            logger.info(
-                "[%s] window %d/%d  nli=%.3f  semantic=%.3f  "
-                "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
-                spec.name, w_idx + 1, len(windows),
-                result.consistency_report.overall_score,
-                semantic_sim,
-                accuracy["mase"],
-                accuracy["fair_mase"],
-                accuracy["coverage_pct"],
-            )
-
-            if save_traces:
+            for persona, pipe in pipelines:
                 try:
-                    render_trace(
-                        result=result,
-                        history=history,
-                        actuals=future,
-                        dataset_name=spec.name,
-                        window_idx=w_idx,
-                        verbalizer_type="LLM",
-                        output_dir=traces_dir,
+                    result = pipe.run(
+                        history,
+                        horizon=len(future),
                         covariates=cov_set,
+                        future_covariates=future_cov_set,
                     )
-                except Exception as te:
-                    logger.warning("Trace rendering failed [%s/w%d]: %s", spec.name, w_idx, te)
+                except Exception as e:
+                    logger.warning("Window %d [%s/%s] failed: %s", w_idx, spec.name, persona, e)
+                    continue
+
+                accuracy = compute_accuracy(result.forecast, future, history)
+                template_text = getattr(result.verbalization, "draft_summary", "") or ""
+                semantic_sim = sem_scorer.score(result.verbalization.summary, template_text)
+
+                record: dict = {
+                    "dataset": spec.name,
+                    "window_idx": w_idx,
+                    "persona": persona,
+                    "history_length": len(history),
+                    "horizon": len(future),
+                    "overall_consistency": result.consistency_report.overall_score,
+                    "is_consistent": result.consistency_report.is_consistent,
+                    "contradiction_rate": result.consistency_report.contradiction_rate,
+                    "semantic_vs_template": semantic_sim,
+                    "num_sentences": len(result.verbalization.sentences),
+                    "mase": accuracy["mase"],
+                    "mase_first": accuracy["mase_first"],
+                    "fair_mase": accuracy["fair_mase"],
+                    "coverage_pct": accuracy["coverage_pct"],
+                    "interval_sharpness": accuracy["interval_sharpness"],
+                    "rst_relations": ",".join(result.verbalization.rst_relations),
+                }
+
+                past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
+                record["top_covariate"] = past_attrs[0].name if past_attrs else None
+                record["top_covariate_impact_pct"] = past_attrs[0].relative_impact_pct if past_attrs else None
+
+                records.append(record)
+                logger.info(
+                    "[%s] window %d/%d [%s]  nli=%.3f  semantic=%.3f  "
+                    "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
+                    spec.name, w_idx + 1, len(windows), persona,
+                    result.consistency_report.overall_score, semantic_sim,
+                    accuracy["mase"], accuracy["fair_mase"], accuracy["coverage_pct"],
+                )
+
+                if save_traces:
+                    try:
+                        render_trace(
+                            result=result, history=history, actuals=future,
+                            dataset_name=spec.name, window_idx=w_idx,
+                            verbalizer_type=persona, output_dir=traces_dir,
+                            covariates=cov_set,
+                        )
+                    except Exception as te:
+                        logger.warning("Trace failed [%s/%s/w%d]: %s", spec.name, persona, w_idx, te)
 
     return pd.DataFrame(records)
 
@@ -479,17 +478,23 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes = axes.flatten()
 
     datasets = sorted(df["dataset"].unique())
+    personas = sorted(df["persona"].unique()) if "persona" in df.columns else ["analyst"]
+    p_colors = {"analyst": "#dd8452", "executive": "#4c72b0"}
+    n_p = len(personas)
+    bar_width = 0.35 if n_p > 1 else 0.5
+    offsets = ([-bar_width/2, bar_width/2] if n_p == 2 else [0])
     x = np.arange(len(datasets))
-    bar_width = 0.5
 
-    def _ds_means(col: str) -> list[float]:
-        return [
-            df[df["dataset"] == ds][col].mean() if len(df[df["dataset"] == ds]) > 0 else 0.0
-            for ds in datasets
-        ]
+
+    def _ds_means(col: str, persona: str = "") -> list[float]:
+        sub = df[df["persona"] == persona] if persona and "persona" in df.columns else df
+        return [sub[sub["dataset"] == ds][col].mean() if len(sub[sub["dataset"] == ds]) > 0 else 0.0
+                for ds in datasets]
 
     # ── Panel 1: MASE by dataset ────────────────────────────────────────
-    axes[0].bar(x, _ds_means("mase"), bar_width, color="#dd8452", alpha=0.8, label="LLM")
+    for i, p in enumerate(personas):
+        axes[0].bar(x + offsets[i], _ds_means("mase", p), bar_width,
+                    label=p, color=p_colors.get(p, "grey"), alpha=0.8)
     axes[0].set_title("MASE by Dataset")
     axes[0].set_xticks(x); axes[0].set_xticklabels(datasets, rotation=15)
     axes[0].set_ylabel("MASE (lower is better)")
@@ -497,35 +502,45 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes[0].legend(fontsize=8)
 
     # ── Panel 2: Coverage by dataset ────────────────────────────────────
-    axes[1].bar(x, _ds_means("coverage_pct"), bar_width, color="#dd8452", alpha=0.8, label="LLM")
+    for i, p in enumerate(personas):
+        axes[1].bar(x + offsets[i], _ds_means("coverage_pct", p), bar_width,
+                    label=p, color=p_colors.get(p, "grey"), alpha=0.8)
     axes[1].set_title("P10-P90 Coverage by Dataset")
     axes[1].set_xticks(x); axes[1].set_xticklabels(datasets, rotation=15)
     axes[1].set_ylabel("Coverage % (higher is better)")
     axes[1].axhline(80.0, color="green", linestyle="--", alpha=0.5, label="80% target")
     axes[1].legend(fontsize=8)
 
-    # ── Panel 3: NLI Consistency ─────────────────────────────────────────
-    nli_vals = df["overall_consistency"].dropna().values
-    bp = axes[2].boxplot([nli_vals], tick_labels=["LLM"], patch_artist=True)
-    bp["boxes"][0].set_facecolor("#dd8452"); bp["boxes"][0].set_alpha(0.7)
+    # ── Panel 3: NLI consistency by persona ──────────────────────────────
+    nli_groups = [
+        df.loc[df["persona"] == p, "overall_consistency"].dropna().values
+        if "persona" in df.columns else df["overall_consistency"].dropna().values
+        for p in personas
+    ]
+    bp3 = axes[2].boxplot(nli_groups, tick_labels=personas, patch_artist=True)
+    for patch, p in zip(bp3["boxes"], personas):
+        patch.set_facecolor(p_colors.get(p, "grey")); patch.set_alpha(0.7)
     axes[2].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold (0.70)")
-    axes[2].set_title("NLI Consistency by Verbalizer")
+    axes[2].set_title("NLI Consistency by Persona")
     axes[2].set_ylabel("Entailment score")
     axes[2].legend(fontsize=8)
 
-    # ── Panel 4: Semantic similarity vs template ─────────────────────────
+    # ── Panel 4: Semantic similarity vs template by persona ────────────────
     if "semantic_vs_template" in df.columns:
-        sem_vals = df["semantic_vs_template"].dropna().values
-        bp4 = axes[3].boxplot([sem_vals], tick_labels=["LLM"], patch_artist=True)
-        bp4["boxes"][0].set_facecolor("#2ecc71"); bp4["boxes"][0].set_alpha(0.7)
+        sem_groups = [
+            df.loc[df["persona"] == p, "semantic_vs_template"].dropna().values
+            if "persona" in df.columns else df["semantic_vs_template"].dropna().values
+            for p in personas
+        ]
+        bp4 = axes[3].boxplot(sem_groups, tick_labels=personas, patch_artist=True)
+        for patch, p in zip(bp4["boxes"], personas):
+            patch.set_facecolor(p_colors.get(p, "grey")); patch.set_alpha(0.7)
         axes[3].axhline(0.5, color="red", linestyle="--", alpha=0.5, label="drift warning (0.50)")
-        axes[3].set_title("Semantic Similarity vs Template")
+        axes[3].set_title("Semantic Similarity vs Template by Persona")
         axes[3].set_ylabel("Cosine similarity (higher = less drift)")
         axes[3].set_ylim(0, 1.05)
         axes[3].legend(fontsize=8)
     else:
-        axes[3].text(0.5, 0.5, "No semantic similarity data",
-                     ha="center", va="center", transform=axes[3].transAxes)
         axes[3].axis("off")
 
     plt.tight_layout()
@@ -581,13 +596,16 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
     lines.append("")
 
-    lines.append("## 3. NLI Consistency by Dataset")
+    lines.append("## 3. NLI Consistency by Persona and Dataset")
     lines.append("")
-    lines.append("| Dataset | Mean NLI | Std | PASS rate |")
-    lines.append("|---|---|---|---|")
-    for ds, grp in df.groupby("dataset"):
+    lines.append("| Persona | Dataset | Mean NLI | Std | PASS rate |")
+    lines.append("|---|---|---|---|---|")
+    group_cols = [c for c in ("persona", "dataset") if c in df.columns]
+    for keys, grp in df.groupby(group_cols):
+        key_strs = [keys] if isinstance(keys, str) else list(keys)
         lines.append(
-            f"| {ds} | {grp['overall_consistency'].mean():.4f} "
+            f"| {' | '.join(str(k) for k in key_strs)} "
+            f"| {grp['overall_consistency'].mean():.4f} "
             f"| {grp['overall_consistency'].std():.4f} "
             f"| {grp['is_consistent'].mean()*100:.1f}% |"
         )
@@ -595,14 +613,17 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
 
 
     if "semantic_vs_template" in df.columns:
-        lines.append("## 4. Semantic Similarity vs Template")
+        lines.append("## 4. Semantic Similarity vs Template by Persona")
         lines.append("")
-        lines.append("| Dataset | Mean | Std | Min |")
-        lines.append("|---|---|---|---|")
-        for ds, grp in df.groupby("dataset"):
+        lines.append("| Persona | Dataset | Mean | Std | Min |")
+        lines.append("|---|---|---|---|---|")
+        group_cols = [c for c in ("persona", "dataset") if c in df.columns]
+        for keys, grp in df.groupby(group_cols):
+            key_strs = [keys] if isinstance(keys, str) else list(keys)
             col = grp["semantic_vs_template"].dropna()
             lines.append(
-                f"| {ds} | {col.mean():.4f} | {col.std():.4f} | {col.min():.4f} |"
+                f"| {' | '.join(str(k) for k in key_strs)} "
+                f"| {col.mean():.4f} | {col.std():.4f} | {col.min():.4f} |"
             )
         lines.append("")
 
@@ -630,14 +651,15 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
 
 def print_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 65)
-    print("  EVALUATION SUMMARY (LLM)")
+    print("  EVALUATION SUMMARY (analyst vs executive)")
     print("=" * 65)
     print(df.groupby("dataset")[["mase", "fair_mase", "coverage_pct"]].mean().round(4))
-    print("\n  NLI Consistency:")
-    print(df[["overall_consistency"]].agg(["mean", "std"]).round(4))
+    print("\n  NLI Consistency by persona:")
+    group_col = "persona" if "persona" in df.columns else "dataset"
+    print(df.groupby(group_col)[["overall_consistency"]].agg(["mean", "std"]).round(4))
     if "semantic_vs_template" in df.columns:
-        print("\n  Semantic similarity vs template:")
-        print(df[["semantic_vs_template"]].agg(["mean", "std", "min"]).round(4))
+        print("\n  Semantic similarity vs template by persona:")
+        print(df.groupby(group_col)[["semantic_vs_template"]].agg(["mean", "std", "min"]).round(4))
     print()
 
 
