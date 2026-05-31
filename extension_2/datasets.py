@@ -167,6 +167,25 @@ TEST_SET: List[TestCase] = [
     TestCase("I want to stress-test the effect of discounts — boost them by 30%.", "scale_covariate", "Outlier: analytical framing with 'stress-test', factor embedded mid-sentence", expected_covariate="price_discount_percentage"),
     TestCase("Honestly, how confident should I be in these numbers?", "confidence_query", "Outlier: conversational register, no forecast-domain keywords"),
     TestCase("Project forward 48 hours from now.", "change_horizon", "Outlier: 'project forward' as forecast verb with time-from-now phrasing", expected_horizon=48),
+
+    # ── additional ambiguous cases (8) ────────────────────────────────
+    TestCase("What if we paused all advertising?", "remove_covariate", "Ambiguous: 'paused' is an unusual remove verb, could look like scale", expected_covariate="marketing_spend"),
+    TestCase("Turn off the weather data for now.", "remove_covariate", "Ambiguous: 'turn off' is informal, could trigger scale path", expected_covariate="weather_temperature"),
+    TestCase("Bump website traffic up by 25%.", "scale_covariate", "Ambiguous: 'bump up' is slang, 'by a quarter' is an indirect factor", expected_covariate="website_traffic"),
+    TestCase("How would things look over the next 2 months?", "change_horizon", "Ambiguous: 'how would things look' could parse as confidence_query", expected_horizon=1440),
+    TestCase("What does the model think about uncertainty in its outputs?", "confidence_query", "Ambiguous: meta question about the model could misfire as remove or unknown"),
+    TestCase("Assume price discounts simply vanished.", "remove_covariate", "Ambiguous: 'vanished' reads like a counterfactual past-tense but is forward-looking", expected_covariate="price_discount_percentage"),
+    TestCase("Previous day sales were 50% stronger — what would have changed?", "counterfactual", "Ambiguous: 'were' + scale phrasing, could trigger scale_covariate", expected_covariate="previous_day_sales"),
+    TestCase("Bring previous day sales up to 1.5x its current level.", "scale_covariate", "Ambiguous: 'bring up to X of current' is an indirect multiplier phrasing", expected_covariate="previous_day_sales"),
+
+    # ── additional outlier phrasings (7) ──────────────────────────────
+    TestCase("Kill the shipping delays.", "remove_covariate", "Outlier: aggressive informal verb 'kill', no remove keyword in patterns", expected_covariate="shipping_delay_hours"),
+    TestCase("Is this prediction solid enough to act on?", "confidence_query", "Outlier: action-oriented framing, no uncertainty or interval keywords"),
+    TestCase("Give me a 10-day window.", "change_horizon", "Outlier: 'window' instead of forecast/horizon, digit + day unit", expected_horizon=240),
+    TestCase("Neutralize the holiday proximity effect.", "remove_covariate", "Outlier: 'neutralize' as remove verb, not in any pattern catalog", expected_covariate="holiday_proximity"),
+    TestCase("How stable is the forecast under current conditions?", "confidence_query", "Outlier: stability framing, no P10/P90 or confidence keyword"),
+    TestCase("Competitor index up 2x — run it.", "scale_covariate", "Outlier: telegraphic style, no full sentence structure", expected_covariate="competitor_promotion_index"),
+    TestCase("Peek at the next 6 hours.", "change_horizon", "Outlier: 'peek' as forecast verb, short horizon edge case", expected_horizon=6),
 ]
 
 # ── Multi-turn test set ────────────────────────────────────────────────
