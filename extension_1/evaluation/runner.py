@@ -44,6 +44,7 @@ import yfinance as yf
 
 from extension_1.config import PipelineConfig, RANDOM_SEED
 from extension_1.evaluation.scoring import NLIConsistencyScorer
+from extension_1.evaluation.qa_scorer import QAFaithfulnessScorer
 from extension_1.attribution.base import CovariateSet
 from extension_1.evaluation.judge import LLMJudge
 from extension_1.pipeline import PipelineResult, VerbalizationPipeline
@@ -325,10 +326,17 @@ def build_pipelines(
     verbalizer_names: List[str],
     seed: int,
     config: PipelineConfig,
-) -> List[Tuple[str, VerbalizationPipeline]]:
-    """Build the requested verbalization pipelines."""
+) -> Tuple[List[Tuple[str, VerbalizationPipeline]], QAFaithfulnessScorer]:
+    """Build the requested verbalization pipelines and shared scorers.
+
+    Returns
+    -------
+    pipelines : list of (name, VerbalizationPipeline)
+    qa_scorer : QAFaithfulnessScorer  (shared across all verbalizers)
+    """
     provider = ChronosForecastProvider(enable_attention=True)
-    scorer = NLIConsistencyScorer()
+    nli_scorer = NLIConsistencyScorer()
+    qa_scorer = QAFaithfulnessScorer()
     pipelines: List[Tuple[str, VerbalizationPipeline]] = []
 
     if "template" in verbalizer_names:
@@ -338,7 +346,7 @@ def build_pipelines(
             VerbalizationPipeline(
                 forecast_provider=provider,
                 verbalizer=tv,
-                scorer=scorer,
+                scorer=nli_scorer,
                 config=config,
             ),
         ))
@@ -356,12 +364,12 @@ def build_pipelines(
             VerbalizationPipeline(
                 forecast_provider=provider,
                 verbalizer=shared_llm,
-                scorer=scorer,
+                scorer=nli_scorer,
                 config=config,
             ),
         ))
 
-    return pipelines
+    return pipelines, qa_scorer
 
 
 def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
@@ -391,7 +399,7 @@ def run_evaluation(
 
     mode = EVAL_MODES[mode_key]
     config = PipelineConfig(seed=seed)
-    pipelines = build_pipelines(verbalizer_names, seed, config)
+    pipelines, qa_scorer = build_pipelines(verbalizer_names, seed, config)
 
     logger.info(
         "Real evaluation | mode=%s | datasets=%s | verbalizers=%s",
@@ -455,22 +463,46 @@ def run_evaluation(
                 window_results[v_type] = result
                 accuracy = compute_accuracy(result.forecast, future, history)
 
+                # QA-based faithfulness (surface-form agnostic)
+                try:
+                    qa_report = qa_scorer.score(
+                        verbalization_text=result.verbalization.summary,
+                        features=result.features,
+                        attribution=result.attribution,
+                    )
+                    qa_coverage      = qa_report.coverage_score
+                    qa_correct_slots = qa_report.correct_slots
+                    qa_total_slots   = qa_report.total_slots
+                    qa_is_faithful   = qa_report.is_faithful
+                except Exception as qe:
+                    logger.warning("QA scorer failed [%s/w%d/%s]: %s", spec.name, w_idx, v_type, qe)
+                    qa_coverage = qa_correct_slots = qa_total_slots = 0
+                    qa_is_faithful = False
+
                 record: Dict[str, Any] = {
                     "dataset": spec.name,
                     "window_idx": w_idx,
                     "verbalizer_type": v_type,
                     "history_length": len(history),
                     "horizon": len(future),
+                    # NLI faithfulness
                     "overall_consistency": result.consistency_report.overall_score,
                     "is_consistent": result.consistency_report.is_consistent,
                     "contradiction_rate": result.consistency_report.contradiction_rate,
+                    # QA faithfulness
+                    "qa_coverage": qa_coverage,
+                    "qa_correct_slots": qa_correct_slots,
+                    "qa_total_slots": qa_total_slots,
+                    "qa_is_faithful": qa_is_faithful,
+                    # text properties
                     "num_sentences": len(result.verbalization.sentences),
+                    "rst_relations": ",".join(result.verbalization.rst_relations),
+                    # forecast accuracy
                     "mase": accuracy["mase"],
                     "mase_first": accuracy["mase_first"],
                     "fair_mase": accuracy["fair_mase"],
                     "coverage_pct": accuracy["coverage_pct"],
                     "interval_sharpness": accuracy["interval_sharpness"],
-                    "rst_relations": ",".join(result.verbalization.rst_relations),
                 }
 
                 past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
@@ -588,19 +620,38 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
     axes[1].axhline(80.0, color="green", linestyle="--", alpha=0.5, label="80% target")
     axes[1].legend()
 
-    # Plot 3 — NLI Consistency boxplot by verbalizer
-    data_groups = [
-        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].values
+    # Plot 3 — NLI vs QA faithfulness side-by-side boxplot
+    fig3_has_qa = "qa_coverage" in df.columns and df["qa_coverage"].notna().any()
+    nli_groups = [
+        df.loc[df["verbalizer_type"] == vt, "overall_consistency"].dropna().values
         for vt in v_types
     ]
-    bp = axes[2].boxplot(data_groups, tick_labels=v_types, patch_artist=True)
+    bp = axes[2].boxplot(nli_groups, tick_labels=v_types, patch_artist=True,
+                         positions=np.arange(len(v_types)) - 0.2, widths=0.3)
     for patch, vt in zip(bp["boxes"], v_types):
         patch.set_facecolor(v_colors.get(vt, "grey"))
         patch.set_alpha(0.7)
-    axes[2].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="threshold (0.70)")
-    axes[2].set_title("NLI Consistency by Verbalizer")
-    axes[2].set_ylabel("Entailment Score")
-    axes[2].legend()
+
+    if fig3_has_qa:
+        qa_groups = [
+            df.loc[df["verbalizer_type"] == vt, "qa_coverage"].dropna().values
+            for vt in v_types
+        ]
+        bp2 = axes[2].boxplot(qa_groups, tick_labels=[f"{vt}\n(QA)" for vt in v_types],
+                              patch_artist=True,
+                              positions=np.arange(len(v_types)) + 0.2, widths=0.3)
+        for patch, vt in zip(bp2["boxes"], v_types):
+            patch.set_facecolor(v_colors.get(vt, "grey"))
+            patch.set_alpha(0.4)
+            patch.set_hatch("//")
+        axes[2].set_xticks(np.arange(len(v_types)))
+        axes[2].set_xticklabels(v_types)
+
+    axes[2].axhline(0.7, color="red", linestyle="--", alpha=0.5, label="NLI threshold (0.70)")
+    axes[2].axhline(0.6, color="blue", linestyle=":", alpha=0.5, label="QA threshold (0.60)")
+    axes[2].set_title("Faithfulness: NLI vs QA Coverage")
+    axes[2].set_ylabel("Score")
+    axes[2].legend(fontsize=7)
 
     plt.tight_layout()
     plt.savefig(str(save_path), dpi=300)
@@ -654,15 +705,24 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
     lines.append("")
 
-    lines.append("## 3. NLI Consistency by Verbalizer Type")
+    lines.append("## 3. Faithfulness by Verbalizer Type")
     lines.append("")
-    lines.append("| Verbalizer | Mean | Std | PASS rate |")
-    lines.append("|---|---|---|---|")
+    lines.append("| Verbalizer | NLI Mean | NLI Std | NLI PASS% | QA Coverage | QA Correct/Total | QA PASS% |")
+    lines.append("|---|---|---|---|---|---|---|")
+    has_qa = "qa_coverage" in df.columns
     for vt, grp in df.groupby("verbalizer_type"):
+        qa_cov  = f"{grp['qa_coverage'].mean():.4f}" if has_qa else "N/A"
+        qa_frac = (
+            f"{grp['qa_correct_slots'].mean():.1f}/{grp['qa_total_slots'].mean():.1f}"
+            if has_qa else "N/A"
+        )
+        qa_pass = f"{grp['qa_is_faithful'].mean()*100:.1f}%" if has_qa else "N/A"
         lines.append(
-            f"| {vt} | {grp['overall_consistency'].mean():.4f} "
+            f"| {vt} "
+            f"| {grp['overall_consistency'].mean():.4f} "
             f"| {grp['overall_consistency'].std():.4f} "
-            f"| {grp['is_consistent'].mean()*100:.1f}% |"
+            f"| {grp['is_consistent'].mean()*100:.1f}% "
+            f"| {qa_cov} | {qa_frac} | {qa_pass} |"
         )
     lines.append("")
 
@@ -723,6 +783,9 @@ def print_summary(df: pd.DataFrame) -> None:
     print(df.groupby("dataset")[["mase", "mase_first", "fair_mase", "coverage_pct"]].mean().round(4))
     print("\n  NLI Consistency by verbalizer:")
     print(df.groupby("verbalizer_type")["overall_consistency"].agg(["mean", "std"]).round(4))
+    if "qa_coverage" in df.columns:
+        print("\n  QA Faithfulness by verbalizer:")
+        print(df.groupby("verbalizer_type")[["qa_coverage", "qa_correct_slots", "qa_total_slots"]].mean().round(4))
     print()
 
 
