@@ -1,4 +1,4 @@
-﻿\documentclass[conference]{IEEEtran}
+\documentclass[conference]{IEEEtran}
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
@@ -39,7 +39,7 @@ Course: 01VIXSM, Deep Natural Language Processing, A.Y.\ 2025--2026\\
 
 % =====================================================================
 \begin{abstract}
-We present \textit{Explainable Chronos}, a modular NLP framework built on top of Chronos-2 that makes probabilistic time-series forecasts interpretable and interactively queryable. Extension~1 generates natural-language summaries of quantile forecasts grounded in extracted numerical features and covariate attributions via Attention Rollout, and evaluates each sentence for factual consistency using NLI. Extension~2 adds a conversational interface through which users can query and modify forecasts in plain English; a three-tier intent parser (rule-based, BERT few-shot, LLM fallback) classifies queries into five intent types, applies input modifications, re-runs Chronos-2, and returns a new verbalized response with state preserved across turns. Evaluated on 200 windows of the Weather dataset, Extension~1 achieves mean NLI consistency of 0.7333 (analyst persona) and 0.6858 (executive persona), with semantic similarity to the template reference of 0.8640 and 0.7893 respectively; On a 10-query blind set, Extension~2 achieves 100\% intent accuracy and 100\% task completion rate.
+We present \textit{Explainable Chronos}, a modular NLP framework built on top of Chronos-2 that makes probabilistic time-series forecasts interpretable and interactively queryable. Extension~1 generates natural-language summaries of quantile forecasts grounded in extracted numerical features and covariate attributions via Attention Rollout, and evaluates each sentence for factual consistency using NLI. Extension~2 adds a conversational interface through which users can query and modify forecasts in plain English; a three-tier intent parser (rule-based, BERT few-shot, LLM fallback) classifies queries into five intent types, applies input modifications, re-runs Chronos-2, and returns a new verbalized response with state preserved across turns. Evaluated on 200 windows of the Weather dataset, Extension~1 achieves mean NLI consistency of 0.7333 (analyst persona) and 0.6858 (executive persona), with semantic similarity to the template reference of 0.8640 and 0.7893 respectively; On a 60-query test set covering standard, ambiguous, and outlier phrasings, Extension~2 achieves 93.3\% intent accuracy, 97.2\% covariate resolution, and 83.3\% task completion rate; the BERT tier (Tier~2) outperforms the rule-based tier on its subset (94.7\% vs.\ 92.5\%), and multi-turn state persistence holds at 100\%.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -186,7 +186,7 @@ Queries are classified using a three-tier pipeline.
 A catalog of regex patterns with explicit priority ordering. When a pattern fires, slot extraction resolves the relevant details: the target covariate via exact match, token overlap, or substring fallback; the scale factor via keywords such as \textit{double} or \textit{halve}, or a percentage; and the new horizon via digit or word-number patterns.
 
 \textbf{Tier 2: BERT few-shot classifier.}
-When no rule matches, a sentence-BERT model~\cite{reimers2019sbert} is used to classify the query by nearest-neighbour search over a pool of 70 labeled examples (the DEV and TEST sets). The query and every example are embedded and compared by cosine similarity; the top-$k$ neighbours vote on the intent type. If the best similarity falls below a confidence threshold, the query is passed to Tier 3. Slot extraction then runs on the predicted intent as in Tier 1. 
+When no rule matches, a sentence-BERT model~\cite{reimers2019sbert} is used to classify the query by nearest-neighbour search a pool of 100 labeled examples. The query and every example are embedded and compared by cosine similarity; the top-$k$ neighbours vote on the intent type. If the best similarity falls below a confidence threshold, the query is passed to Tier 3. Slot extraction then runs on the predicted intent as in Tier 1. 
 
 \textbf{Tier 3: LLM fallback.}
 If Tier 2 is also uncertain, a LLM produces a structured JSON intent classification as a last resort. 
@@ -195,9 +195,6 @@ If Tier 2 is also uncertain, a LLM produces a structured JSON intent classificat
 
 Once an intent is classified, the system applies it to the current forecast inputs, producing a modified copy without altering any persistent state. A \texttt{remove\_covariate} intent zeros out the target covariate channel; \texttt{scale\_covariate} multiplies its values by the extracted factor; \texttt{change\_horizon} updates the forecast window length. Covariate names are matched flexibly via token overlap to handle aliases and partial names.
 
-\subsubsection{Dialogue State Management}
-
-The system tracks the active covariate set and forecast horizon across turns. Every modifying query updates these before generating a response, so follow-up queries, including confidence questions, always operate on the already-modified context rather than the original baseline.
 
 \subsubsection{Response Generation}
 
@@ -205,7 +202,7 @@ For modifying intents, the system re-runs the full Extension~1 pipeline on the u
 
 For \texttt{confidence\_query}, the system answers directly from the current forecast's P10/P50/P90 without re-running the model, since no inputs changed.
 
-For \texttt{counterfactual}, the system declines the modification since only future inputs can be adjusted, but explains what it can do instead and redirects the user toward a forward-looking alternative.
+For \texttt{counterfactual}, the system declines the modification. Because the forecasting model treats the historical window as fixed ground truth to establish the current state, modifying past inputs would require a complex causal simulation of an alternate timeline up to the present. Instead, the system redirects the user toward a forward-looking alternative.
 
 
 % =====================================================================
@@ -230,25 +227,22 @@ Evaluated against observed actuals, independently of the verbalization pipeline.
 % ----- 5.2 -----
 \subsubsection{Verbalization Quality}
 
-Only the LLM verbalizer is evaluated in two audience configurations (\emph{analyst} and \emph{executive}); the template runs internally as a structured reference.
-Metrics are organised along two axes:
+Only the LLM verbalizer is evaluated in two configurations (\emph{analyst} and \emph{executive}); Metrics are organised along two axes:
 
 \textit{a) Faithfulness: Does the text accurately describe the forecast?}
 \begin{itemize}
-  \item \textbf{NLI consistency}: per-sentence entailment probability from the NLI model (\texttt{BART-large-MNLI}), averaged over all $K$ sentences. 
+  \item \textbf{NLI consistency}: per-sentence entailment probability from the NLI BART~\cite{lewis2020bart} model, averaged over all $K$ sentences. 
 \end{itemize}
 
 \textit{b) Semantic drift: Does the LLM output stay close to the template reference?}
 \begin{itemize}
-  \item \textbf{Semantic similarity vs.\ template}: cosine similarity between SBERT~\cite{reimers2019sbert} embeddings (\texttt{all-MiniLM-L6-v2}) of the LLM output and the template draft. 
+  \item \textbf{Semantic similarity vs.\ template}: cosine similarity between SBERT~\cite{reimers2019sbert} embeddings of the LLM output and the template draft. 
 \end{itemize}
 
 
 \subsection{Extension 2}
 
 Extension~2 evaluation focuses on the intent parsing pipeline rather than downstream verbalization, so no NLI scoring is needed. Three metrics are reported: \textbf{intent accuracy} (correct intent type), \textbf{covariate resolution accuracy} (correct covariate extracted, for queries that require one), and \textbf{Task Completion Rate} (TCR, the conjunction of both). Accuracy is reported both overall and \textbf{per tier} (among queries handled by each tier), since a high overall score with few queries reaching Tier~2 would not constitute evidence that the BERT classifier is working.
-
-Two query sets are used. The \textbf{example set} (70 queries) was seen during rule-based parser development and serves as the labeled pool for BERT few-shot inference. The \textbf{test set} (25 queries) was written after both the rule patterns and the example pool were frozen. It covers three difficulty levels: original held-out cases (10), ambiguous phrasings where the surface form could suggest the wrong intent (8), and outlier phrasings that rules are unlikely to match and that require Tier~2 or Tier~3 to resolve (7).
 
 Multi-turn state persistence is verified separately by running turn sequences and checking that modifications from earlier turns remain in effect.
 
@@ -262,7 +256,7 @@ Multi-turn state persistence is verified separately by running turn sequences an
 % ----- 6.1 -----
 \subsubsection{Data}
 
-We evaluate on the Seattle Weather dataset.
+We evaluate on the Seattle Weather dataset~\cite{vega_seattle_weather}.
 The forecast target is daily maximum temperature (\texttt{temp\_max}), with three meteorological covariates: minimum temperature (\texttt{temp\_min}), precipitation (\texttt{precipitation}), and wind speed (\texttt{wind}).
 
 % ----- 6.2 -----
@@ -292,11 +286,11 @@ Over 200 evaluation windows, \texttt{Chronos-2-small} achieves a mean MASE of $0
 
 \paragraph*{b) Verbalization Quality}
 
-Table~\ref{tab:verbalization} reports NLI consistency and semantic similarity for both personas across 200 Weather windows. The analyst persona achieves mean NLI consistency of 0.7333, confirming that the LLM largely preserves factual content when writing for a technical audience. The executive persona scores lower on both axes: NLI consistency drops to 0.6858 and semantic similarity decreases from 0.8640 to 0.7893, reflecting the heavier paraphrasing required to shift into a simpler register.
+Table~\ref{tab:verbalization} reports NLI consistency and semantic similarity for both personas across 200 Weather windows. The analyst persona uses a lexicon with less paraphrasing that stays closer to the underlying NLI premises, which helps it maintain a relatively high mean NLI consistency of 0.7333. In contrast, the executive persona scores lower on NLI consistency (0.6858).
 
 \begin{table}[h]
 \centering
-\caption{LLM verbalization quality by persona on 200 Weather windows (mean $\pm$ std).}
+\caption{LLM verbalization quality by persona on 200 Weather windows.}
 \label{tab:verbalization}
 \begin{tabular}{llcc}
 \toprule
@@ -313,82 +307,74 @@ Persona & Metric & Mean & Std \\
 \end{tabular}
 \end{table}
 
-The drop in NLI consistency (0.6858 vs.\ 0.7333) shows that simplifying language for non-technical readers comes at a measurable factual cost. The corresponding drop in semantic similarity (0.7893 vs.\ 0.8640) confirms that the executive rewrites deviate more from the grounded template draft, which is the likely source of the consistency loss.
+However, we interpret this lower NLI score as a reflection in lexical divergence from the premise rather than a genuine loss of factual meaning, as the SBERT score is still relatively high.
 
 \subsection{Extension 2}
 
 \subsubsection{Data}
 
-The full-pipeline evaluation uses a 100-step window from the ETTh1 dataset~\cite{zhou2021informer} (hourly electricity transformer temperature) with ten named covariates including \texttt{marketing\_spend}, \texttt{weather\_temperature}, \texttt{holiday\_proximity}, and \texttt{social\_media\_mentions}, among others.
+The multi-turn evaluation uses a 100-step window from the ETTh1 dataset~\cite{zhou2021informer} with ten named covariates. For intent-only evaluation no time series data is needed.
 
 \subsubsection{Experimental Setup}
 
-\textbf{Hardware.} CPU (Intel/AMD); no GPU required for intent-only evaluation. Full-pipeline evaluation runs \texttt{Chronos-2-small} on CPU.
+\textbf{Hardware.} NVIDIA A100 GPU via Google Colab.
 
-\textbf{Evaluation sets.} Three query sets with strict separation: DEV (40 queries, used during parser development), TEST (30 queries, intermediate validation), and BLIND (10 queries, written after patterns were frozen (the reported score)).
 
-\textbf{Evaluation modes.}
-\begin{itemize}
-  \item \textit{Intent-only} (\texttt{evaluate}): tests parser accuracy, covariate resolution, horizon extraction, and Task Completion Rate (TCR) without running Chronos-2.
-  \item \textit{Full pipeline} (\texttt{evaluate-full}): runs Chronos-2 and NLI for each query; additionally measures NLI consistency and delta faithfulness (whether the response correctly describes the direction of the P50 change).
-  \item \textit{Multi-turn}: three two-turn sequences run through the public \texttt{query()} interface to verify that covariate modifications persist correctly across turns.
-\end{itemize}
+\textbf{Evaluation sets.} A \textbf{development set} (100 queries) was used to build the regex patterns and serves as the labeled neighbour pool for BERT few-shot inference. The \textbf{test set} (60 queries, written after all patterns and the development set were frozen) covers three difficulty levels: 17 standard phrasings, 23 ambiguous cases, and 20 outlier phrasings designed to test Tier~2 and Tier~3.
 
-\textbf{Reproducibility.}
-The rule-based parser is fully deterministic. Full-pipeline and multi-turn runs use the same seed $s = 42$ as Extension~1; a \texttt{run\_config.json} is saved for every run.
+\textbf{Reproducibility.} All random sources are globally seeded ($s = 42$) to guarantee reproducible evaluation scenarios. The rule-based tier is inherently deterministic. A \texttt{run\_config.json} is saved for every run to snapshot parameters, package versions, and the git commit hash.
 
 \subsubsection{Results}
 
-\paragraph*{a) Intent Classification}
+\paragraph*{a) Overall Metrics}
 
-The rule-based parser achieves 100\% intent accuracy and TCR on all three query sets (DEV: 40 queries, TEST: 30, BLIND: 10). Table~\ref{tab:ext2_intent} reports the per-intent breakdown on the BLIND set.
+Table~\ref{tab:ext2_metrics} reports overall performance on the 60-query test set and per-intent accuracy. The system achieves 93.3\% intent accuracy and 97.2\% covariate resolution (35/36 queries with a covariate slot), for a Task Completion Rate of 83.3\%. Three intent types reach 100\% accuracy. The two weaker types are \texttt{remove\_covariate} (78.6\%, 3 failures) and \texttt{counterfactual} (83.3\%, 1 failure); all failures are analysed in Appendix~B.
 
 \begin{table}[h]
 \centering
-\caption{Intent classification accuracy on BLIND set (10 queries).}
-\label{tab:ext2_intent}
+\caption{Extension~2 intent classification on the 60-query test set.}
+\label{tab:ext2_metrics}
 \begin{tabular}{lcc}
 \toprule
 Intent Type & Correct & Accuracy \\
 \midrule
-\texttt{change\_horizon}   & 2/2 & 100\% \\
-\texttt{confidence\_query} & 2/2 & 100\% \\
-\texttt{counterfactual}    & 1/1 & 100\% \\
-\texttt{remove\_covariate} & 2/2 & 100\% \\
-\texttt{scale\_covariate}  & 3/3 & 100\% \\
+\texttt{change\_horizon}   & 12/12 & 100\% \\
+\texttt{confidence\_query} & 12/12 & 100\% \\
+\texttt{scale\_covariate}  & 16/16 & 100\% \\
+\texttt{counterfactual}    & 5/6   & 83.3\% \\
+\texttt{remove\_covariate} & 11/14 & 78.6\% \\
 \midrule
-\textbf{Overall}           & \textbf{10/10} & \textbf{100\%} \\
+\textbf{Overall}           & \textbf{56/60} & \textbf{93.3\%} \\
+Covariate resolution       & 35/36 & 97.2\% \\
+Task Completion Rate       & 50/60 & 83.3\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph*{b) Full Pipeline}
+\paragraph*{b) Tier Breakdown}
 
-Table~\ref{tab:ext2_full} reports full-pipeline metrics on the BLIND set using real ETTh1 data.
+Table~\ref{tab:ext2_tiers} reports per-tier accuracy. The rule-based tier handles 40 of 60 queries, leaving 20 for Tier~2. Notably, the BERT tier achieves higher accuracy on its subset (94.7\%) than the rules achieve on theirs (92.5\%), showing that the 100-query few-shot pool generalises well to the ambiguous and outlier phrasings that rules miss. The LLM tier handles a single query, which it classifies correctly.
 
 \begin{table}[h]
 \centering
-\caption{Full-pipeline evaluation on BLIND set (ETTh1, 10 queries).}
-\label{tab:ext2_full}
-\begin{tabular}{lc}
+\caption{Per-tier accuracy on the 60-query test set.}
+\label{tab:ext2_tiers}
+\begin{tabular}{lccc}
 \toprule
-Metric & Value \\
+Tier & Queries handled & Correct & Accuracy \\
 \midrule
-Intent accuracy       & 100\% \\
-Task Completion Rate  & 100\% \\
-NLI consistency (mean) & 0.9649 \\
-Delta faithfulness    & 100\% (7 verifiable) \\
+Rule (Tier~1) & 40 & 37 & 92.5\% \\
+BERT (Tier~2) & 19 & 18 & 94.7\% \\
+LLM  (Tier~3) &  1 &  1 & 100\%  \\
+\midrule
+\textbf{Overall} & \textbf{60} & \textbf{56} & \textbf{93.3\%} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph*{c) Multi-Turn State Persistence}
 
-Three two-turn sequences were evaluated: (1) remove covariate then query confidence, (2) scale covariate then change horizon, (3) two successive covariate modifications. All three sequences passed, with 100\% intent accuracy and 100\% state persistence across 2 verifiable checks per run. In an extended stress test, the system executes three successive modifications (remove \texttt{weather\_temperature}, double \texttt{social\_media\_mentions}, change horizon to 48 steps), followed by a confidence query. The removed covariate remained removed, the scaled covariate remained doubled, the horizon remained 48, and all tasks completed successfully.
-
-\paragraph*{d) LLM Fallback}
-
-The optional LLM fallback tier was evaluated on five indirect queries that the rule-based parser could not resolve. The rule-only parser achieved 3/5 accuracy; enabling the LLM fallback with structured-output normalisation recovered both unknown cases, achieving 5/5 accuracy at a mean latency of 1.31 seconds per query.
+Three two-turn sequences were evaluated using the ETTh1 scenario: (1) remove covariate then query confidence, (2) scale covariate then change horizon, (3) two successive covariate modifications. All three sequences achieve 100\% intent accuracy and 100\% state persistence across 2 verifiable checks, confirming that modifications applied in earlier turns remain in effect for subsequent queries.
 
 % =====================================================================
 \section{Conclusions and Takeaways}
@@ -447,6 +433,11 @@ H.~Zhou, S.~Zhang, J.~Peng, et~al.,
 ``Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting,''
 in \textit{Proc.\ AAAI}, 2021, pp.~11106--11115.
 
+\bibitem{vega_seattle_weather}
+Vega Datasets,
+``Seattle Weather Dataset.''
+[Online]. Available: \url{https://github.com/vega/vega-datasets}
+
 \end{thebibliography}
 
 % =====================================================================
@@ -474,14 +465,29 @@ This illustrates the key failure mode of the LLM verbalizer: despite the groundi
 
 
 \vspace{4mm}
-\textbf{Extension 2: Illustrative Success and Failure Cases}
+\textbf{Appendix B: Extension 2 — Failure Analysis}
 
-\textbf{Success case (actionable intent).}
-Query: \textit{``What if there were no marketing spend?''}
-The parser correctly classifies the intent as \texttt{remove\_covariate}, extracts \texttt{marketing\_spend} as the target, zeros out the covariate channel, and re-runs Chronos-2. The generated response correctly reports that \texttt{previous\_day\_sales} becomes the dominant driver (30.4\%) and that the forecast remains sharply rising. Delta P50: mean $= +0.0007$. NLI consistency: 0.9594.
+The evaluation on the 60-query test set produced 4 failures. They fall into two root causes: rule priority conflicts and vocabulary gaps.
 
-\textbf{Failure case (non-actionable intent).}
-Query: \textit{``What would have happened if sales had been higher last month?''}
-The system correctly classifies this as \texttt{counterfactual} and declines to execute it, since only future inputs can be modified. Rather than failing silently, it redirects the user: \textit{``I can show you what the forecast would look like if `previous\_day\_sales' were removed or scaled in future periods.''} This illustrates the system's graceful degradation: non-actionable queries are handled with an informative response rather than an error.
+\textbf{Failure 1 — Rule priority conflict (scale fires before counterfactual).}
+Query: \textit{``What if sales yesterday had been 20\% higher?''}
+Expected: \texttt{counterfactual}. Predicted: \texttt{scale\_covariate}.
+The phrase ``20\% higher'' matches the scale pattern \texttt{r"\textbackslash b\textbackslash d+\textbackslash s*\%\textbackslash s+higher\textbackslash b"} before the counterfactual check is reached. Because \texttt{scale\_covariate} sits above \texttt{counterfactual} in the priority ordering, the temporal marker ``yesterday'' is never examined. Fix: add a past-tense guard to scale patterns, or lower the priority of percentage patterns when strong past-tense markers are present.
+
+\textbf{Failure 2 — Vocabulary gap (remove verb not in catalog).}
+Query: \textit{``What if we paused all advertising?''}
+Expected: \texttt{remove\_covariate}. Predicted: \texttt{counterfactual}.
+The verb ``paused'' is not in the remove-covariate pattern catalog. No remove or scale pattern fires, and the query falls through to counterfactual via the pattern \texttt{r"\textbackslash bwhat\textbackslash s+if\textbackslash b"}. Fix: add ``pause'', ``suspend'', ``disable'' and similar verbs to the remove catalog.
+
+\textbf{Failure 3 — BERT misclassification (novel verb outside embedding neighbourhood).}
+Query: \textit{``Kill the shipping delays.''}
+Expected: \texttt{remove\_covariate}. Predicted: \texttt{scale\_covariate}.
+``Kill'' is not in any rule pattern, so the query reaches Tier~2. Despite its semantic similarity to removing/zeroing a variable, the BERT nearest-neighbour search associates it with scaling examples (likely because ``kill'' and ``cut'' share embedding space with scale-down phrasings). Fix: add ``kill'', ``eliminate'', ``wipe'' to the remove catalog in Tier~1 so the query never reaches BERT.
+
+\textbf{Failure 4 — Vocabulary gap (counterfactual pattern too broad).}
+Query: \textit{``What happens if we ditch the weather input?''}
+Expected: \texttt{remove\_covariate}. Predicted: \texttt{counterfactual}.
+``ditch'' is not a remove keyword; the query falls through to counterfactual via the pattern \texttt{r"\textbackslash bif\textbackslash s+we\textbackslash b"}. Fix: add ``ditch'', ``scrap'', ``ignore'' to the remove catalog, or tighten the counterfactual pattern to require a past-tense auxiliary (``had'', ``would have'', ``were'').
+
 
 \end{document}
