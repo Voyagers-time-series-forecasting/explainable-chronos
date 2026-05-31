@@ -91,7 +91,7 @@ A verbalization result comprising:
 (b) per-sentence grounding metadata mapping each $s_k$ to the numerical features that generated it;
 (c) a covariate attribution result containing top-$k$ importance scores derived via Attention Rollout~\cite{abnar2020attentionflow} and per-covariate temporal saliency over the history window;
 (d) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent;
-(e) two deterministic text-quality scores: \emph{fact recall} (fraction of key numerical claims reproduced in the text) and \emph{feature completeness} (fraction of expected feature categories covered).
+(e) a semantic similarity score measuring how closely the LLM output aligns with the deterministic template draft, quantifying semantic drift from the structured reference.
 
 \subsection{Extension 2}
 
@@ -163,10 +163,18 @@ The \emph{rhetorical layer} then adds RST-structured sentences~\cite{mann1988rst
 Each sentence is paired with a grounding dictionary recording the numerical features that generated it.
 
 \textbf{LLM Verbalizer.}
-The template output serves as a refinement draft for a local LLM.
+The template output serves as a refinement draft for a local LLM and is stored in the verbalization result as \texttt{draft\_summary}.
 The prompt is structured as few-shot in-context learning: three worked DRAFT$\to$REWRITE examples are prepended, followed by the actual input consisting of (i)~numerical features, (ii)~grounding triples of the form (\emph{subject}, \emph{predicate}, \emph{object}), (iii)~the template draft, and (iv)~constraints forbidding causal claims, domain-specific speculation, and changes to numerical values.
 Greedy decoding is used to maximise factual fidelity.
 Because the LLM may freely reorganize content across sentences, each output sentence is mapped to a \emph{combined} grounding aggregating all template feature groundings.
+The template verbalizer is not evaluated as a standalone output; it functions solely as a structured reference for the LLM and for semantic similarity scoring.
+
+\textbf{Audience Adaptation.}
+The LLM verbalizer accepts a \texttt{persona} parameter ($\in \{$\texttt{analyst},\texttt{executive}$\}$, default \texttt{analyst}) that selects a distinct system prompt and set of few-shot examples while keeping every numerical fact identical.
+The \emph{analyst} persona targets quantitative professionals: it preserves technical terminology (P10/P50/P90, prediction interval, regime shift) and produces dense, precise prose.
+The \emph{executive} persona targets non-technical decision-makers: the system prompt replaces jargon with plain equivalents (``forecast range'', ``notable change in pattern'', ``lower/central/upper estimate'') and the few-shot rewrites demonstrate a simpler, action-oriented register.
+Both personas share the same loaded model weights via \texttt{share\_model\_from()}, adding zero extra GPU memory cost.
+Because the grounding triples and NLI premises are identical for both personas, any drop in NLI consistency in the executive output is attributable to genuine factual deviation rather than vocabulary mismatch.
 
 
 
@@ -186,6 +194,14 @@ The overall consistency score for summary $\mathcal{S}$ is the arithmetic mean o
 \end{equation}
 %
 A summary is deemed \emph{consistent} when $\text{Score}(\mathcal{S}) \geq 0.70$.
+
+Premise quality is critical for reliable NLI scoring.
+Three enrichments are applied to ensure that each rendered premise contains exactly the facts that the corresponding sentence asserts:
+\begin{itemize}
+  \item \textbf{Trajectory:} the premise enumerates specific turning-point values and step positions (e.g.\ ``the series peaks near $v$ around step $t$''), matching the level of detail in the hypothesis sentence.
+  \item \textbf{Attribution:} the premise includes the covariate's actual effect direction (\emph{positive} or \emph{negative}) alongside the percentage contribution, so that directional claims in the sentence are grounded rather than hallucinated.
+  \item \textbf{Temporal focus:} the premise includes the peak attention step index and the named history segment (e.g.\ ``final 15\% of history'') that the sentence cites.
+\end{itemize}
 
 
 \subsection{Extension 2}
@@ -232,23 +248,17 @@ Evaluated against observed actuals, independently of the verbalization pipeline.
 % ----- 5.2 -----
 \subsubsection{Verbalization Quality}
 
-Evaluated against the model's own numerical output, not against actuals.
-Metrics are organised along three axes:
+Only the LLM verbalizer is evaluated in two audience configurations (\emph{analyst} and \emph{executive}); the template runs internally as a structured reference.
+Metrics are organised along two axes:
 
 \textit{a) Faithfulness: Does the text accurately describe the forecast?}
 \begin{itemize}
-  \item \textbf{Per-sentence NLI score}: entailment probability from the NLI model; the mean over all sentences defines the overall consistency score ($\geq 0.70$ = pass).
-  \item \textbf{Fact recall}: fraction of key numerical values (horizon, attribution percentages, trajectory change). 
+  \item \textbf{NLI consistency}: per-sentence entailment probability from the NLI model (BART-large-MNLI); the mean over all $K$ sentences defines the overall score ($\geq 0.70$ = pass). Premises are enriched with specific numerical values matching the hypothesis (turning-point steps, covariate direction, peak attention index) to ensure that entailment failure signals genuine factual deviation rather than premise under-specification. Because both personas receive identical grounding triples and NLI premises, a drop in the executive score directly measures factual distortion introduced by simplification.
 \end{itemize}
 
-\textit{b) Usefulness: Would a human prefer this?}
+\textit{b) Semantic drift: Does the LLM output stay close to the template reference?}
 \begin{itemize}
-  \item \textbf{LLM-as-a-Judge}: a local LLM performs all $\binom{V}{2}$ pairwise comparisons per scenario, assigning human-preference scores in $[1,5]$ and declaring a winner or tie.
-\end{itemize}
-
-\textit{c) Completeness: Are all key features mentioned?}
-\begin{itemize}
-  \item \textbf{Feature completeness}: fraction of expected feature categories (trend, uncertainty, attribution, risk, regime shift) covered by at least one keyword in the text.
+  \item \textbf{Semantic similarity vs.\ template}: cosine similarity between SBERT embeddings (\texttt{all-MiniLM-L6-v2}) of the LLM output and the template draft stored in \texttt{draft\_summary}. A score $\geq 0.50$ indicates acceptable semantic alignment. The executive persona is expected to produce a lower score than the analyst persona, reflecting heavier paraphrasing --- this is the intended behaviour and not a quality failure, provided NLI remains $\geq 0.70$.
 \end{itemize}
 
 
@@ -274,51 +284,53 @@ The forecast target is daily maximum temperature (\texttt{temp\_max}), with thre
 
 \textbf{Hardware.} NVIDIA A100 GPU via Google Colab.
 
-\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small~\cite{chronos2}); \texttt{transformers} (BART-large-MNLI~\cite{lewis2020bart} for NLI, Qwen2.5-7B-Instruct~\cite{qwen} for LLM verbalization)
+\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (Chronos-2-small~\cite{chronos2}); \texttt{transformers} (BART-large-MNLI~\cite{lewis2020bart} for NLI, Qwen2.5-7B-Instruct~\cite{qwen} for LLM verbalization); \texttt{sentence-transformers} (\texttt{all-MiniLM-L6-v2} for semantic similarity scoring).
 
 \textbf{Validation method.}
-The evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage) are computed against observed actuals; verbalization quality metrics (NLI consistency, fact recall, feature completeness) are computed against the model's own numerical features; holistic explanation quality is assessed via pairwise LLM-as-a-judge comparisons.
+The evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage) are computed against observed actuals; verbalization quality metrics (NLI consistency, semantic similarity vs.\ template) are computed against the model's own numerical features for both personas.
 
 \textbf{Windowing.}
 We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps and a forecast horizon of 96 steps. Windows are positioned at evenly spaced starting points within the test split.
 
-\textbf{Comparisons.}
-The two verbalizer types (Template, LLM) are compared across all 200 scenarios.
+\textbf{Evaluation.}
+Both LLM personas (\emph{analyst}, \emph{executive}) are evaluated on every window. They share the same Qwen2.5-7B-Instruct weights and differ only in system prompt and few-shot examples. The template verbalizer runs internally as the structured reference draft.
 
 % ----- 6.3 -----
 \subsubsection{Results}
 
 \paragraph*{a) Forecast Accuracy}
-Over 200 evaluation windows, Chronos-2-small achieves a mean MASE of $0.998 \pm 0.184$ and a Fair MASE of $0.425 \pm 0.167$, indicating that the median forecast substantially outperforms a flat naive baseline over the 96-step horizon despite being close to the one-step naive on MASE. The P10--P90 interval achieves $91.4\% \pm 4.6\%$  coverage.
+Over 200 evaluation windows, Chronos-2-small achieves a mean MASE of $0.998 \pm 0.184$ and a Fair MASE of $0.425 \pm 0.167$, indicating that the median forecast substantially outperforms a flat na\"ive baseline over the 96-step horizon. The P10--P90 interval achieves $91.4\% \pm 4.6\%$ coverage.
 
 \paragraph*{b) Verbalization Quality}
 
-\textit{Faithfulness.}
-Both verbalizers achieve high NLI consistency (Template: $0.884 \pm 0.026$; LLM: $0.877 \pm 0.070$), with pass rates of 100\% and 99\% respectively.
-Fact recall is 1.000 for both verbalizers across all windows.
-Table~\ref{tab:verbalization} reports the full breakdown.
+\textit{Faithfulness and drift.}
+Table~\ref{tab:verbalization} reports NLI consistency and semantic similarity for both personas across 200 Weather windows.
+The expected pattern is: both personas achieve NLI $\geq 0.70$ (factual preservation holds across registers); the executive persona shows lower semantic similarity to the template, reflecting deliberate paraphrasing into simpler language.
 
 \begin{table}[h]
 \centering
-\caption{Verbalization quality on 200 Weather windows (mean $\pm$ std).}
+\caption{LLM verbalization quality by persona on 200 Weather windows (mean $\pm$ std).}
 \label{tab:verbalization}
-\begin{tabular}{lccc}
+\begin{tabular}{llcc}
 \toprule
-Verbalizer & NLI Consistency & Fact Recall & Feat.\ Completeness \\
+Persona & Metric & Mean & Std \\
 \midrule
-Template & $0.884 \pm 0.026$ & $1.000$ & $1.000$ \\
-LLM      & $0.877 \pm 0.070$ & $1.000$ & $0.932 \pm 0.102$ \\
+\multirow{3}{*}{Analyst}
+  & NLI Consistency         & --- & --- \\
+  & Semantic Sim.\ vs.\ Template & --- & --- \\
+  & NLI PASS rate           & --- & \\
+\midrule
+\multirow{3}{*}{Executive}
+  & NLI Consistency         & --- & --- \\
+  & Semantic Sim.\ vs.\ Template & --- & --- \\
+  & NLI PASS rate           & --- & \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textit{Usefulness.}
-The judge strongly prefers the LLM verbalizer: it wins in 199 of 200 pairwise comparisons (mean preference score $4.95/5$ vs.\ $2.44/5$ for the Template).
-We note, however, that this setup is effectively a toy example: the same LLM that produced the LLM verbalizer output also serves as judge, introducing a strong self-preference bias. 
+\textit{Note:} Results to be filled after running the updated evaluation pipeline (Section~V-B). The key comparison is whether the executive persona maintains NLI $\geq 0.70$ while achieving meaningfully lower semantic similarity — demonstrating that audience adaptation changes form without compromising factual accuracy.
 
-
-\textit{Completeness.}
-The Template verbalizer reaches perfect feature completeness (1.000) by construction, while the LLM scores $0.932 \pm 0.102$, with occasional omissions of feature categories.
+\textit{Covariate attribution.}
 Across all 200 windows, \texttt{temp\_min} is ranked as the top covariate in 199 cases ($38.2\% \pm 1.8\%$ mean relative impact), confirming its dominant influence on the \texttt{temp\_max} forecast.
 
 
