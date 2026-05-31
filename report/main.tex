@@ -295,6 +295,17 @@ We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps
 \textbf{Evaluation.}
 Both LLM personas (\emph{analyst}, \emph{executive}) are evaluated on every window. They share the same Qwen2.5-7B-Instruct weights and differ only in system prompt and few-shot examples. The template verbalizer runs internally as the structured reference draft.
 
+\textbf{Reproducibility.}
+Before each evaluation run, all random sources are fixed to a single integer seed ($s = 42$): Python's \texttt{random} module, NumPy, and PyTorch (CPU and CUDA).
+cuDNN auto-tuning is disabled (\texttt{deterministic=True}, \texttt{benchmark=False}) to prevent non-deterministic algorithm selection on GPU.
+The template verbalizer uses an isolated \texttt{random.Random(seed)} instance, making phrase-variant selection immune to changes in global random state between pipeline stages.
+The LLM verbalizer uses greedy decoding (\texttt{do\_sample=False}), which is deterministic given fixed weights and tokenization.
+A \texttt{run\_config.json} file is written alongside every results CSV, capturing: seed, mode, dataset list, audience personas, all model identifiers, package versions (\texttt{torch}, \texttt{transformers}, \texttt{sentence-transformers}, \texttt{chronos}), and the repository git commit hash.
+
+Two limitations remain.
+First, model weights are referenced by floating HuggingFace identifiers without a revision hash, so silent upstream updates could alter results.
+Second, no dependency lockfile is committed to the repository, meaning \texttt{pip install} on a different date may resolve different package versions.
+
 % ----- 6.3 -----
 \subsubsection{Results}
 
@@ -352,6 +363,13 @@ The full-pipeline evaluation uses a 100-step window from the ETTh1 dataset~\cite
   \item \textit{Full pipeline} (\texttt{evaluate-full}): runs Chronos-2 and NLI for each query; additionally measures NLI consistency and delta faithfulness (whether the response correctly describes the direction of the P50 change).
   \item \textit{Multi-turn}: three two-turn sequences run through the public \texttt{query()} interface to verify that covariate modifications persist correctly across turns.
 \end{itemize}
+
+\textbf{Reproducibility.}
+The intent-only evaluation is fully deterministic by design: the rule-based parser uses only regex matching and ordered priority rules with no randomness.
+For full-pipeline and multi-turn runs, all random sources are seeded identically to Extension~1 (Python \texttt{random}, NumPy, PyTorch CPU/CUDA; cuDNN deterministic mode enabled) using a single seed $s = 42$ before each evaluation function call.
+Synthetic covariate data falls back to \texttt{numpy.random.default\_rng(seed)} when real ETTh1 data is unavailable, ensuring the fallback scenario is also reproducible.
+A \texttt{run\_config.json} file is saved to the output directory at the start of every \texttt{main()} call, recording: seed, evaluation set, pipeline mode, model identifiers, package versions, and git commit hash.
+The same limitations noted for Extension~1 apply: model weights are not revision-pinned and no dependency lockfile is committed.
 
 \subsubsection{Results}
 

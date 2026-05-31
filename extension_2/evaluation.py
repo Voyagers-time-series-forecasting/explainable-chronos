@@ -26,6 +26,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,67 @@ COVARIATE_NAMES: List[str] = [
     "holiday_proximity", "shipping_delay_hours",
     "social_media_mentions", "weather_temperature", "random_sensor_noise",
 ]
+
+
+def _seed_everything(seed: int) -> None:
+    """Pin all random sources for reproducible runs."""
+    import random as _random
+    _random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
+
+
+def _save_eval_config(
+    out_path: Path,
+    seed: int,
+    evaluation_set: str,
+    run_full_pipeline: bool,
+) -> None:
+    """Save a JSON snapshot of every parameter that affects the run."""
+    import sys, datetime, subprocess, importlib.metadata
+
+    cfg: dict = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": seed,
+        "evaluation_set": evaluation_set,
+        "run_full_pipeline": run_full_pipeline,
+        "models": {
+            "chronos": "autogluon/chronos-2-small",
+            "nli": "facebook/bart-large-mnli",
+        },
+        "python": sys.version,
+        "package_versions": {},
+    }
+
+    for pkg in ("torch", "transformers", "chronos"):
+        try:
+            cfg["package_versions"][pkg] = importlib.metadata.version(pkg)
+        except Exception:
+            cfg["package_versions"][pkg] = "unknown"
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).parent,
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        cfg["git_commit"] = commit
+    except Exception:
+        cfg["git_commit"] = "unavailable"
+
+    out_path.mkdir(parents=True, exist_ok=True)
+    config_path = out_path / "run_config.json"
+    with open(config_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    logger.info("Run config saved → %s", config_path)
 
 
 def _make_eval_scenario(
@@ -766,6 +828,8 @@ def run_dialogue_evaluation(
     pd.DataFrame
         One row per test case with all evaluation metrics.
     """
+    _seed_everything(seed)
+
     from extension_2.intent_parser import IntentParser
 
     parser = IntentParser(covariate_names=COVARIATE_NAMES)
@@ -1026,12 +1090,8 @@ def run_multi_turn_evaluation(seed: int = 42) -> pd.DataFrame:
     Each sequence creates a fresh DialogueSystem and runs turns in order.
     State persistence is verified by inspecting system.covariates directly
     after each modifying turn — no Chronos-2 call needed.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per turn with intent, state-check, and task-completion columns.
     """
+    _seed_everything(seed)
     history, initial_covariates = _make_eval_scenario(COVARIATE_NAMES, seed=seed)
     records: List[Dict[str, Any]] = []
 
@@ -1152,6 +1212,7 @@ def main(
     """Entry point for Extension 2 evaluation."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
+    _save_eval_config(EVAL_DIR, seed, evaluation_set, run_full_pipeline)
 
     logger.info(
         "Running Extension 2 evaluation (set=%s, full_pipeline=%s) ...",

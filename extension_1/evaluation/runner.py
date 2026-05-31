@@ -42,7 +42,10 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from extension_1.config import PipelineConfig, RANDOM_SEED
+from extension_1.config import (
+    PipelineConfig, RANDOM_SEED,
+    NLI_MODEL_NAME, LLM_MODEL_CPU, LLM_MODEL_CUDA,
+)
 from extension_1.evaluation.scoring import NLIConsistencyScorer, SemanticSimilarityScorer
 from extension_1.attribution.types import CovariateSet
 from extension_1.pipeline import PipelineResult, VerbalizationPipeline
@@ -359,6 +362,87 @@ def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
     )
 
 
+# ──────────────────────── reproducibility helpers ─────────────────────
+
+def _seed_everything(seed: int) -> None:
+    """Pin all random sources before a run so results are reproducible.
+
+    Covers: Python random, NumPy, PyTorch (CPU + CUDA).  Also disables
+    cuDNN auto-tuning, which selects non-deterministic convolution algorithms.
+    """
+    import random as _random
+    _random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception:
+        pass
+
+
+def _save_run_config(
+    out_path: Path,
+    seed: int,
+    mode_key: str,
+    dataset_keys: List[str],
+    pipelines: list,
+) -> None:
+    """Persist a JSON snapshot of every parameter that affects the run.
+
+    Saved alongside the results CSV so any result file can be traced back
+    to the exact configuration, software versions, and code revision.
+    """
+    import sys, datetime, subprocess, importlib.metadata
+
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except Exception:
+        cuda_available = False
+
+    cfg: dict = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": seed,
+        "mode": mode_key,
+        "datasets": dataset_keys,
+        "personas": [p for p, _ in pipelines],
+        "models": {
+            "chronos": "autogluon/chronos-2-small",
+            "nli": NLI_MODEL_NAME,
+            "llm": LLM_MODEL_CUDA if cuda_available else LLM_MODEL_CPU,
+            "sbert": "sentence-transformers/all-MiniLM-L6-v2",
+        },
+        "python": sys.version,
+        "package_versions": {},
+    }
+
+    for pkg in ("torch", "transformers", "sentence_transformers", "chronos"):
+        try:
+            cfg["package_versions"][pkg] = importlib.metadata.version(pkg)
+        except Exception:
+            cfg["package_versions"][pkg] = "unknown"
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).parent,
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        cfg["git_commit"] = commit
+    except Exception:
+        cfg["git_commit"] = "unavailable"
+
+    out_path.mkdir(parents=True, exist_ok=True)
+    config_path = out_path / "run_config.json"
+    with open(config_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    logger.info("Run config saved → %s", config_path)
+
+
 # ──────────────── main evaluation runner ──────────────────────────────
 
 def run_evaluation(
@@ -369,6 +453,7 @@ def run_evaluation(
     output_dir: Optional[Path | str] = None,
 ) -> pd.DataFrame:
     """Run LLM evaluation with NLI + semantic similarity vs template."""
+    _seed_everything(seed)
 
     mode = EVAL_MODES[mode_key]
     config = PipelineConfig(seed=seed)
@@ -378,12 +463,14 @@ def run_evaluation(
         return pd.DataFrame()
 
     sem_scorer = SemanticSimilarityScorer()
+    out_path = Path(output_dir) if output_dir else EVAL_DIR
+    _save_run_config(out_path, seed, mode_key, dataset_keys, pipelines)
+
     logger.info("LLM evaluation | mode=%s | datasets=%s | personas=%s",
                 mode_key, dataset_keys, [p for p, _ in pipelines])
     logger.info(mode.description)
 
     records: List[Dict[str, Any]] = []
-    out_path = Path(output_dir) if output_dir else EVAL_DIR
     traces_dir = out_path / "traces"
 
     for ds_key in dataset_keys:
