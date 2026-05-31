@@ -271,13 +271,13 @@ def _plot_qa(ax: plt.Axes, qa_report: QAFaithfulnessReport | None) -> None:
                 fontsize=7, color="#555", va="top", style="italic")
         # Expected → extracted
         detail = textwrap.shorten(
-            f"expect: {ss.expected_answer!r}  got: {ss.extracted_answer!r}",
-            width=90, placeholder="…",
+            f"expect: {ss.expected_answer!r}  best match: {ss.best_sentence!r}",
+            width=100, placeholder="…",
         )
         ax.text(0.22, y, detail, transform=ax.transAxes,
                 fontsize=7, color="#2c3e50", va="top")
 
-    ax.set_title("QA Slot Faithfulness", fontsize=10, fontweight="bold")
+    ax.set_title("Claim-Based Faithfulness (SBERT)", fontsize=10, fontweight="bold")
 
 
 
@@ -412,10 +412,9 @@ def render_trace(
                 for ss in qa_report.slot_scores:
                     ok = "OK" if ss.is_correct else "MISS"
                     f.write(
-                        f"  [{ok}] {ss.slot_name:<28} "
-                        f"score={ss.score:.3f}  conf={ss.qa_confidence:.3f}\n"
-                        f"         expect: {ss.expected_answer!r}\n"
-                        f"         got   : {ss.extracted_answer!r}\n"
+                        f"  [{ok}] {ss.slot_name:<28} score={ss.score:.3f}\n"
+                        f"         expect : {ss.expected_answer!r}\n"
+                        f"         matched: {ss.best_sentence!r}\n"
                     )
             else:
                 f.write("QA scorer was not run for this window.\n")
