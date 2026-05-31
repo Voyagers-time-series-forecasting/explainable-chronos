@@ -7,10 +7,6 @@ in Transformers", 2020) adapted for Chronos-2's two attention axes:
     cross-series attention at each patch; used for covariate importance.
   - enc_time_self_attn_weights   (Series, Heads, Patches, Patches):
     within-series temporal attention; used for temporal saliency.
-
-Raw per-layer attention becomes near-uniform in deep layers and is unreliable
-as an attribution signal. Rollout composes attention matrices across layers,
-accounting for residual connections, to recover input-level attribution.
 """
 
 from __future__ import annotations
@@ -79,15 +75,18 @@ class AttentionAttributor:
         if attentions is None:
             raise ValueError("No attention weights captured from model.")
 
+        # --- Covariate importance (group axis) ---
+        # enc_group_self_attn_weights records how each series (target + covariates)
+        # attends to every other series at each patch position.
+        # Question answered: which covariate influenced the target most?
         group_attn = attentions.get("enc_group_self_attn_weights")
         if not group_attn:
             raise ValueError("No enc_group_self_attn_weights available. Model may not support group attention.")
 
-        # Rollout over the series dimension: traces how covariate information
-        # routes into the target across all group-attention layers.
+        # Apply rollout across all group-attention layers to get a
+        # (Series x Series) matrix. Row 0 is the target; column c gives
+        # how much covariate c contributed to the target's representation.
         rollout = self._compute_rollout(list(group_attn))
-
-        # Row 0 = target series; columns 1..N = covariates in input order.
         importance = self._aggregate_by_covariate(rollout, list(covariates.names))
 
         attributions = sorted(
@@ -108,12 +107,12 @@ class AttentionAttributor:
             for attr in attributions:
                 attr.relative_impact_pct = (attr.importance_score / total) * 100
 
-        # Temporal saliency via enc_time_self_attn_weights (per-series temporal
-        # self-attention, shape per layer: (series, heads, patches, patches)).
-        # dim-0 indexes individual series in the group (0=target, 1+=covariates),
-        # NOT the group-as-collection axis.
-        # Empirically focus_breadth ≈ 0.77–0.82; enc_group is near-uniform
-        # (~0.998, entropy guard active) — see experiments/temporal_attention_probe.ipynb.
+        # --- Temporal saliency (time axis) ---
+        # enc_time_self_attn_weights records how each series attends to its own
+        # history patches (within-series, not cross-series).
+        # Question answered: which part of the past did each covariate focus on?
+        # Shape per layer: (Series, Heads, Patches, Patches). Series dim-0 is
+        # the target; dim 1+ are individual covariates — NOT the group axis.
         time_attn = attentions.get("enc_time_self_attn_weights")
         history_length = len(covariates.values)
         temporal, patch_ratio = self._compute_temporal_saliency(
@@ -160,30 +159,40 @@ class AttentionAttributor:
 
         patch_to_step_ratio = history_length / n_patches
 
-        # Per-covariate rollout through time-attention layers.
-        # Each series occupies one independent slice along dim-0.
+        # Rollout is computed independently per covariate: each covariate's
+        # time attention is entirely separate from the others.
+        # Covariate c occupies slice c+1 of the Series dimension (slice 0 = target).
         rollouts: list[torch.Tensor | None] = [None] * n_covariates
         for layer in time_attn_layers:
             for c in range(n_covariates):
-                g = c + 1  # slice 0 = target series; 1+ = covariate series
+                g = c + 1  # slice 0 = target; covariate c is at slice c+1
                 if g >= layer.shape[0]:
                     continue
                 # Head-average → (patches, patches)
                 avg = layer[g].float().mean(dim=0)
                 n_p = avg.shape[-1]
                 eye = torch.eye(n_p, device=avg.device, dtype=avg.dtype)
-                # Residual adjustment (paper §3): (avg + I) row-normalized = 0.5·avg + 0.5·I
+                # Residual adjustment: same formula as in _compute_rollout
                 layer_norm = avg + eye
                 layer_norm = layer_norm / layer_norm.sum(dim=-1, keepdim=True)
-                # Rollout recursion (paper §4): Ã(lᵢ) = A(lᵢ) · Ã(lᵢ₋₁)
+                # Rollout recursion: Ã(lᵢ) = A(lᵢ) · Ã(lᵢ₋₁)
                 rollouts[c] = layer_norm if rollouts[c] is None else torch.matmul(layer_norm, rollouts[c])
 
-        # Key-patch saliency: mean over query positions of the final rollout matrix.
+        # --- Collapse (P x P) rollout to (P,) per covariate ---
+        # rollouts[c] is a (patches x patches) matrix where entry [q, p] encodes
+        # how much history patch p contributed to current patch q.
+        # We want one importance score per history patch, regardless of which
+        # current patch was affected, so we average over all query positions (rows).
         saliency_patch = np.zeros((n_covariates, n_patches), dtype=np.float32)
         for c in range(n_covariates):
             if rollouts[c] is not None:
                 saliency_patch[c] = rollouts[c].mean(dim=0).cpu().numpy()
 
+        # --- Re-sample from patch space to time-step space ---
+        # saliency_patch[c] has one value per patch, but each patch covers multiple
+        # consecutive time steps, so this is not yet at the natural time resolution.
+        # We spread each patch score across the time steps it covers to produce
+        # a saliency vector of length history_length.
         patch_idx = np.arange(n_patches, dtype=float)
         hist_idx  = np.linspace(0, n_patches - 1, history_length)
         max_entropy = float(np.log(history_length))
@@ -196,8 +205,12 @@ class AttentionAttributor:
             total = sal_hist.sum()
             sal_hist = sal_hist / total if total > 1e-12 else np.full(history_length, 1.0 / history_length)
 
+            # Peak step: the single history moment the covariate attended to most.
             peak_step = int(np.argmax(sal_hist))
 
+            # Focus breadth: normalised entropy of the saliency distribution.
+            # Low  → attention concentrated on a narrow window of the history.
+            # High → attention spread evenly across the whole history.
             p = sal_hist + 1e-10
             p /= p.sum()
             entropy = float(-np.dot(p, np.log(p)))
@@ -210,6 +223,8 @@ class AttentionAttributor:
                 focus_breadth=focus_breadth,
             ))
 
+        # If every covariate shows near-uniform attention, the signal is too
+        # diffuse to be informative and we suppress temporal saliency entirely.
         if temporal and all(t.focus_breadth > self.temporal_entropy_threshold for t in temporal):
             logger.debug(
                 "enc_time temporal saliency is near-uniform (min fb=%.3f); omitting.",
@@ -220,25 +235,22 @@ class AttentionAttributor:
         return temporal, patch_to_step_ratio
 
     def _compute_rollout(self, attentions: list[Any]) -> torch.Tensor:
-        """Compute Attention Rollout across all layers for the series dimension.
+        """Apply Attention Rollout across all group-attention layers.
 
-        Each group-attention tensor has shape ``(Patches, Heads, Series, Series)``
-        where the Series dims index individual series members of the group
-        (0 = target, 1+ = covariates). Group attention operates on the batch axis:
-        at each patch index the series attend to each other. Averaging over patches
-        yields one (Series, Series) matrix per layer before rollout.
+        Each layer tensor has shape (Patches, Heads, Series, Series).
+        Series index 0 is the target; indices 1..C are the covariates.
 
-        Residual adjustment:
-            A = 0.5 · W_att + 0.5 · I
-        Implemented as (avg + I) row-normalized, which is algebraically equivalent
-        since both avg and I have rows summing to 1 (sum = 2, divide by 2 = 0.5 each).
+        Steps per layer:
+          1. Average over Patches and Heads → one (Series x Series) matrix.
+          2. Residual adjustment: A = 0.5·W + 0.5·I, via (avg + I) row-normalised
+             (equivalent because softmax rows sum to 1, so avg + I rows sum to 2).
+          3. Rollout recursion: Ã(lᵢ) = A(lᵢ) · Ã(lᵢ₋₁), starting from I.
 
-        Rollout recursion:
-            Ã(lᵢ) = A(lᵢ) · Ã(lᵢ₋₁)   (new layer left-multiplied)
-        So Ã(L) = A(L) · … · A(1), and Ã[0, c] gives how much covariate c's input
-        contributed to the target's output representation.
+        The final Ã[i, j] approximates how much series j's input contributed to
+        series i's output. Row 0 (target) holds the target's attribution to each
+        covariate; normalising those values gives the relative impact percentages.
 
-        Returns a rollout matrix of shape ``(Series, Series)``.
+        Returns a rollout matrix of shape (Series, Series).
         """
         rollout: torch.Tensor | None = None
         for layer_attn in attentions:
@@ -265,7 +277,9 @@ class AttentionAttributor:
         """Extract target-to-covariate importance scores from the rollout matrix.
 
         rollout[i, j] = how much series j's input contributed to series i's output.
-        Row 0 is the target; columns 1..N are covariates in input order.
+        Row 0 is the target; columns 1..C are the covariates in input order.
+        We read row 0 to get each covariate's raw contribution to the target.
+        Normalisation to 100% is done in the caller after top-k selection.
         """
         if rollout.numel() == 0:
             return {name: 1.0 / max(1, len(covariate_names)) for name in covariate_names}
