@@ -283,8 +283,9 @@ class TemplateVerbalizer:
         # ── Attribution sentences ─────────────────────────────────
         if attribution and attribution.attributions:
             for attr in attribution.attributions[: attribution.top_k]:
+                direction_word = getattr(attr, "direction", "positive")
                 sentences.append(
-                    f"{attr.name.replace('_', ' ').title()} has a positive effect "
+                    f"{attr.name.replace('_', ' ').title()} has a {direction_word} effect "
                     f"on the forecast, contributing {attr.relative_impact_pct:.1f}% of the "
                     f"total attribution."
                 )
@@ -293,6 +294,7 @@ class TemplateVerbalizer:
                     "covariate_name": attr.name,
                     "importance_score": attr.importance_score,
                     "relative_impact_pct": attr.relative_impact_pct,
+                    "direction": direction_word,
                 }
 
         # ── Temporal focus sentence (conditional on non-trivial saliency) ──

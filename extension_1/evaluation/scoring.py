@@ -140,9 +140,11 @@ def render_premise(grounding: Dict[str, Any]) -> str:
         name = grounding.get("covariate_name", "unknown")
         impact = grounding.get("relative_impact_pct", 0)
         importance_score = grounding.get("importance_score", 0)
+        direction = grounding.get("direction", None)
+        dir_str = f" It has a {direction} effect on the forecast." if direction else ""
         return (
             f"The covariate '{name}' contributes {impact:.1f}% to the total forecast attribution "
-            f"(importance score: {importance_score:.4f})."
+            f"(importance score: {importance_score:.4f}).{dir_str}"
         )
 
     if gtype == "trajectory":
@@ -150,21 +152,36 @@ def render_premise(grounding: Dict[str, Any]) -> str:
         end = grounding.get("end_value", "?")
         pct = grounding.get("pct_change", 0)
         direction = grounding.get("end_direction", "unknown")
-        tps = grounding.get("turning_points", [])
+        tps = grounding.get("turning_points", [])  # list of (step, value, kind)
+        tp_parts: list[str] = []
+        for tp in tps[:3]:
+            step, val, kind = tp if len(tp) == 3 else (*tp, "peak")
+            verb = "peaks" if kind == "peak" else "troughs"
+            tp_parts.append(f"the series {verb} near {val:.2f} around step {step}")
         tp_str = (
-            f" The series passes through {len(tps)} turning point(s)."
-            if tps else ""
+            f" {'; '.join(tp_parts)}, before" if tp_parts else ""
         )
         return (
-            f"The median forecast starts near {start:.2f} and ends near {end:.2f}, "
-            f"a change of {pct:.1f}% {direction} the starting level.{tp_str}"
+            f"The median forecast starts near {start:.2f},{tp_str} "
+            f"settling near {end:.2f} at the horizon "
+            f"({pct:.1f}% {direction} the starting level)."
         )
 
     if gtype == "temporal_focus":
         covariates = grounding.get("covariates", [])
         if covariates:
-            names = ", ".join(c.get("covariate_name", "?") for c in covariates)
-            return f"The model's temporal attention focused on: {names}."
+            parts: list[str] = []
+            for c in covariates:
+                name = c.get("covariate_name", "?")
+                step = c.get("peak_step", None)
+                pos  = c.get("position_label", None)
+                if step is not None and pos is not None:
+                    parts.append(f"{name} (focused in {pos}, peak at step {step})")
+                elif step is not None:
+                    parts.append(f"{name} (peak at step {step})")
+                else:
+                    parts.append(name)
+            return f"The model's temporal attention focused on: {', '.join(parts)}."
         return "Temporal attention data is available."
 
     # Generic fallback — filter out non-serialisable values to avoid empty strings

@@ -56,15 +56,16 @@ def verbalize_trajectory(trajectory: dict[str, Any]) -> tuple[str, dict[str, Any
     end_direction = "above" if end_val > start else "below"
     pct_change = abs((end_val - start) / (abs(start) + 1e-9) * 100)
     parts.append(
-        f"before settling near {end_val:.2f} at the horizon \u2014 "
-        f"{pct_change:.1f}% {end_direction} the starting level"
+        f"before settling near {end_val:.2f} at the horizon "
+        f"({pct_change:.1f}% {end_direction} the starting level)"
     )
 
-    # Join: "Starting from X, the series peaks near Y. Before settling near Z."
-    if len(parts) > 2:
-        sentence = parts[0] + ", " + parts[1] + ". " + ". ".join(parts[2:]) + "."
-    else:
-        sentence = ", ".join(parts) + "."
+    # All parts joined with commas into a SINGLE sentence so that the
+    # grounding dict stays 1-to-1 with the NLI sentence list.
+    # The old ". ".join() created multiple sentence fragments from one grounding
+    # slot, which caused every downstream sentence to be scored against the
+    # wrong-type grounding, collapsing NLI scores to ~0.28.
+    sentence = ", ".join(parts) + "."
 
     grounding = {
         "type": "trajectory",
