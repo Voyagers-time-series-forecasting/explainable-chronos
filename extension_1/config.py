@@ -50,8 +50,12 @@ CONSISTENCY_THRESHOLD: float = 0.70
 # Extractive QA model used to check factual slot coverage.
 # roberta-base-squad2 is small (~500 MB), fast on CPU, and accurate.
 QA_MODEL_NAME: str = "deepset/roberta-base-squad2"
-QA_CORRECT_THRESHOLD: float = 0.50    # per-slot semantic match threshold
-QA_FAITHFUL_THRESHOLD: float = 0.60   # mean coverage threshold
+QA_CORRECT_THRESHOLD: float = 0.60   # per-slot cosine similarity threshold
+QA_FAITHFUL_THRESHOLD: float = 0.55  # mean coverage threshold
+
+# Sentence-BERT model for semantic answer matching (QAFactEval-style).
+# all-MiniLM-L6-v2 is ~80 MB, fast on CPU, strong on semantic similarity.
+SBERT_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 # NLI score decomposition weights (entailment + neutral + contradiction = 1)
 NLI_NEUTRAL_WEIGHT: float = 0.60

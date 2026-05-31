@@ -16,15 +16,15 @@ For each factual slot in ForecastFeatures / AttributionResult:
      the trend?").
   2. An extractive QA model (roberta-base-squad2) reads the verbalization
      and extracts an answer span.
-  3. The extracted span is compared to the expected value using:
-       - Synonym-set matching for categorical/boolean values
-       - Regex numeric matching (within a tolerance band) for numbers
-       - Token-level F1 as a fallback
-  4. Per-slot scores are averaged into a ``coverage_score`` (0–1).
+  3. The extracted span is scored against the expected answer using
+     **Sentence-BERT cosine similarity** (QAFactEval-style), which
+     handles paraphrase naturally — "minimum temperature" ≈ "temp_min",
+     "mostly the same" ≈ "flat", "getting wider" ≈ "widening".
+  4. Numeric slots use regex extraction first; cosine similarity is used
+     as a fallback when no number is found in the extracted span.
+  5. Per-slot scores are averaged into a ``coverage_score`` (0–1).
 
-Unlike NLI, this scorer does NOT penalise an LLM for paraphrasing
-"the trend is rising" as "values are expected to grow" — both map to
-the same categorical answer and therefore receive a score of 1.
+Reference: Fabbri et al. (2022) QAFactEval.
 """
 
 from __future__ import annotations
@@ -37,78 +37,11 @@ from typing import Any
 import numpy as np
 from transformers import pipeline as hf_pipeline
 
-from extension_1.config import QA_MODEL_NAME
+from extension_1.config import QA_MODEL_NAME, SBERT_MODEL_NAME
 from extension_1.features.extractor import ForecastFeatures
 from extension_1.attribution.types import AttributionResult
 
 logger = logging.getLogger(__name__)
-
-
-# ─────────────── synonym sets for semantic matching ───────────────────
-# Each key is an expected categorical value; the set contains all
-# surface forms that should count as a correct answer.
-_SYNONYMS: dict[str, set[str]] = {
-    # trend direction
-    "rising":     {"rising", "rise", "rises", "increase", "increases", "increasing",
-                   "upward", "up", "grow", "grows", "growing", "climbing", "higher"},
-    "falling":    {"falling", "fall", "falls", "decrease", "decreases", "decreasing",
-                   "downward", "down", "decline", "declines", "declining", "dropping"},
-    "flat":       {"flat", "stable", "unchanged", "steady", "constant", "sideways",
-                   "horizontal", "level", "roughly the same"},
-    # magnitude
-    "sharply":    {"sharply", "sharp", "significantly", "substantially", "steeply",
-                   "rapidly", "strongly", "dramatically", "considerable"},
-    "moderately": {"moderately", "moderate", "noticeably", "meaningfully",
-                   "considerably", "noticeable"},
-    "slightly":   {"slightly", "slight", "marginally", "modestly", "gently",
-                   "mildly", "small", "gradual"},
-    # uncertainty level
-    "high":       {"high", "wide", "broad", "large", "significant", "substantial",
-                   "uncertain", "very uncertain"},
-    "moderate":   {"moderate", "moderately", "medium", "reasonable", "some"},
-    "low":        {"low", "narrow", "tight", "small", "limited", "confident", "certain"},
-    # uncertainty trend
-    "widening":   {"widening", "widen", "widens", "expanding", "expand", "expands",
-                   "growing", "increasing", "spreading"},
-    "narrowing":  {"narrowing", "narrow", "narrows", "converging", "converge",
-                   "tightening", "tighten", "shrinking"},
-    "stable":     {"stable", "stability", "steady", "consistent", "unchanged",
-                   "constant", "holding", "remain"},
-    # covariate direction
-    "positive":   {"positive", "positively", "increases", "boosts", "drives up",
-                   "pushes up", "higher", "upward effect"},
-    "negative":   {"negative", "negatively", "decreases", "reduces", "pulls down",
-                   "pushes down", "lower", "downward effect"},
-    # boolean true / false
-    "true":       {"yes", "true", "detected", "significant", "identified", "present",
-                   "found", "noted", "exists", "there is"},
-    "false":      {"no", "false", "not detected", "absent", "none", "not present",
-                   "no significant"},
-}
-
-
-def _semantic_match(extracted: str, expected: str) -> float:
-    """1.0 if extracted text matches expected value via synonyms; token F1 otherwise."""
-    ext = extracted.lower().strip()
-    exp = expected.lower().strip()
-
-    if exp in ext:
-        return 1.0
-
-    for syn in _SYNONYMS.get(exp, {exp}):
-        if syn in ext:
-            return 1.0
-
-    # SQuAD-style token F1 fallback
-    pred_toks = set(re.sub(r"[^\w\s]", "", ext).split())
-    exp_toks  = set(re.sub(r"[^\w\s]", "", exp).split())
-    common    = pred_toks & exp_toks
-    if not common:
-        return 0.0
-    prec = len(common) / len(pred_toks) if pred_toks else 0.0
-    rec  = len(common) / len(exp_toks)  if exp_toks  else 0.0
-    denom = prec + rec
-    return (2 * prec * rec / denom) if denom else 0.0
 
 
 def _numeric_match(extracted: str, expected_value: float, tol: float = 0.15) -> float:
@@ -120,6 +53,7 @@ def _numeric_match(extracted: str, expected_value: float, tol: float = 0.15) -> 
         except ValueError:
             continue
     return 0.0
+
 
 
 # ─────────────────────── data classes ─────────────────────────────────
@@ -280,15 +214,18 @@ class QAFaithfulnessScorer:
     def __init__(
         self,
         model_name: str = QA_MODEL_NAME,
+        sbert_model_name: str = SBERT_MODEL_NAME,
         device: str = "cpu",
-        correct_threshold: float = 0.5,
-        faithful_threshold: float = 0.60,
+        correct_threshold: float = 0.60,
+        faithful_threshold: float = 0.55,
     ) -> None:
         self.model_name = model_name
+        self.sbert_model_name = sbert_model_name
         self.device = device
         self.correct_threshold = correct_threshold
         self.faithful_threshold = faithful_threshold
         self._pipeline: Any = None
+        self._sbert: Any = None
 
     def _load(self) -> Any:
         if self._pipeline is None:
@@ -300,10 +237,37 @@ class QAFaithfulnessScorer:
             )
         return self._pipeline
 
+    def _load_sbert(self) -> Any:
+        """Lazy-load the Sentence-BERT model (shared across all slots)."""
+        if self._sbert is None:
+            from sentence_transformers import SentenceTransformer
+            logger.info("Loading SBERT model %s …", self.sbert_model_name)
+            self._sbert = SentenceTransformer(self.sbert_model_name)
+        return self._sbert
+
+    def _cosine_score(self, text_a: str, text_b: str) -> float:
+        """Cosine similarity between SBERT embeddings of two strings (0–1)."""
+        model = self._load_sbert()
+        embs = model.encode([text_a, text_b], convert_to_numpy=True, show_progress_bar=False)
+        a, b = embs[0], embs[1]
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom < 1e-12:
+            return 0.0
+        return float(np.clip(np.dot(a, b) / denom, 0.0, 1.0))
+
     def _score_slot(self, slot: QASlot, extracted: str) -> float:
+        """Score extracted answer against expected using cosine similarity.
+
+        Numeric slots: regex match first (exact), cosine fallback.
+        All other slots: SBERT cosine similarity directly.
+        """
         if slot.slot_type == "numeric" and slot.expected_numeric is not None:
-            return _numeric_match(extracted, slot.expected_numeric)
-        return _semantic_match(extracted, slot.expected_answer)
+            num_score = _numeric_match(extracted, slot.expected_numeric)
+            if num_score > 0:
+                return num_score
+            # Fallback: cosine (handles "about half" ≈ "50")
+            return self._cosine_score(extracted, slot.expected_answer) * 0.8
+        return self._cosine_score(extracted, slot.expected_answer)
 
     def score(
         self,
@@ -345,23 +309,19 @@ class QAFaithfulnessScorer:
 
             sem_score = self._score_slot(slot, extracted)
 
-            # Soft-gate: if the QA model has very low confidence the span
-            # is likely a random extraction — halve the score.
-            final_score = sem_score * 0.5 if confidence < 0.05 else sem_score
-
             slot_scores.append(SlotScore(
                 slot_name=slot.slot_name,
                 question=slot.question,
                 expected_answer=slot.expected_answer,
                 extracted_answer=extracted,
                 qa_confidence=confidence,
-                score=final_score,
-                is_correct=final_score >= self.correct_threshold,
+                score=sem_score,
+                is_correct=sem_score >= self.correct_threshold,
             ))
             logger.debug(
-                "QA %-28s expected=%-12s extracted=%-25s score=%.3f conf=%.3f",
+                "QA %-28s expected=%-12s extracted=%-25s cosine=%.3f conf=%.3f",
                 slot.slot_name, slot.expected_answer, extracted[:25],
-                final_score, confidence,
+                sem_score, confidence,
             )
 
         if not slot_scores:
