@@ -28,7 +28,7 @@
 \IEEEauthorblockN{[Author~1],
 [Author~2],
 [Author~3],
-[Author~4],
+Farnood Sotoudeh,
 Emanuele Romito}
 \IEEEauthorblockA{
 Course: 01VIXSM --- Deep Natural Language Processing, A.Y.\ 2025--2026\\
@@ -39,9 +39,11 @@ Course: 01VIXSM --- Deep Natural Language Processing, A.Y.\ 2025--2026\\
 
 % =====================================================================
 \begin{abstract}
+We present \textit{Explainable Chronos}, a modular NLP framework built on top of Chronos-2 that makes probabilistic time-series forecasts interpretable and interactively queryable. Extension~1 generates natural-language summaries of quantile forecasts, grounded in extracted numerical features and covariate attributions via Attention Rollout, and scores each sentence for factual consistency using NLI. Extension~2 adds a conversational dialogue interface through which users can query and counterfactually modify forecasts in plain English; a two-tier intent parser (deterministic rule-based with optional LLM fallback) classifies queries into five intent types, applies input modifications, re-runs Chronos-2, and returns a new verbalized response with state preserved across turns. On a 10-query blind evaluation set, Extension~2 achieves 100\% intent accuracy, 100\% task completion rate, mean NLI consistency of 0.9649, and 100\% delta faithfulness across all verifiable cases.
 \end{abstract}
 
 \begin{IEEEkeywords}
+time-series forecasting, natural language generation, explainability, NLI consistency, dialogue systems, intent parsing, Chronos-2, covariate attribution
 \end{IEEEkeywords}
 
 
@@ -91,6 +93,20 @@ A verbalization result comprising:
 (d) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent;
 (e) two deterministic text-quality scores: \emph{fact recall} (fraction of key numerical claims reproduced in the text) and \emph{feature completeness} (fraction of expected feature categories covered).
 
+\subsection{Extension 2}
+
+\textbf{Input.}
+A natural-language query $q$ issued by a user, together with the current dialogue state comprising a covariate set $\mathbf{Z} \in \mathbb{R}^{T \times C}$ and a forecast horizon $H$.
+
+\vspace{2mm}
+
+\textbf{Task.}
+Classify $q$ into one of five intent types $\mathcal{I} = \{$\texttt{remove\_covariate}, \texttt{scale\_covariate}, \texttt{change\_horizon}, \texttt{confidence\_query}, \texttt{counterfactual}$\}$, extract any relevant slots (target covariate, scale factor, new horizon), apply the corresponding modification to the forecast inputs, re-run Chronos-2, and generate a natural-language response via the Extension~1 verbalization pipeline. State is preserved across turns.
+
+\vspace{2mm}
+
+\textbf{Output.}
+A dialogue response comprising: (a) the classified intent with confidence source; (b) a human-readable description of the modification applied; (c) a new natural-language forecast summary; (d) the delta P50 (change in median forecast relative to the unmodified baseline); (e) an NLI consistency score for the generated response.
 
 % =====================================================================
 \section{Methodology}
@@ -172,6 +188,28 @@ The overall consistency score for summary $\mathcal{S}$ is the arithmetic mean o
 A summary is deemed \emph{consistent} when $\text{Score}(\mathcal{S}) \geq 0.70$.
 
 
+\subsection{Extension 2}
+
+Extension~2 builds directly on Extension~1, exposing the verbalization pipeline through a stateful conversational interface. The architecture consists of five components.
+
+\subsubsection{Intent Parser}
+
+The parser uses a two-tier architecture. \textbf{Tier~1} is a deterministic rule-based baseline (\texttt{rule\_parser.py}) consisting of a regex catalog with explicit priority ordering: \texttt{confidence\_query} $\to$ \texttt{remove\_covariate} $\to$ \texttt{scale\_covariate} $\to$ \texttt{change\_horizon} $\to$ \texttt{counterfactual}. Slot extraction handles covariate name resolution via exact match, token overlap, and substring fallback; scale factors via keyword lookup (\textit{double}, \textit{halve}, \textit{triple}) and percentage patterns; and horizon values via digit and word-number patterns (e.g., ``three days'' $\to$ 72 steps for hourly data). \textbf{Tier~2} is an optional LLM fallback (Qwen1.5-1.8B-Chat) that activates only when the rule tier returns \texttt{unknown} and \texttt{use\_llm\_fallback=True} is set; it is disabled by default to keep evaluation deterministic.
+
+\subsubsection{Input Modifier}
+
+A stateless module that applies a \texttt{ParsedIntent} to the current covariate set and horizon, producing modified copies without side effects. For \texttt{remove\_covariate}, the target channel is zeroed out; for \texttt{scale\_covariate}, values are multiplied by the extracted factor; for \texttt{change\_horizon}, the horizon integer is updated. Fuzzy covariate matching (token overlap) handles aliases and partial names.
+
+\subsubsection{Dialogue State Management}
+
+The \texttt{DialogueSystem} maintains state across turns through \texttt{self.covariates} and \texttt{self.horizon}. Every modifying query persists the updated inputs before returning a response, so subsequent turns --- including confidence queries --- operate on the already-modified forecast context.
+
+\subsubsection{Response Generation}
+
+For modifying intents, the modified inputs are passed to the Extension~1 \texttt{VerbalizationPipeline} (with \texttt{enable\_attention=True}), which re-runs Chronos-2, extracts features, computes covariate attribution via Attention Rollout, and generates a new NL summary. The response includes the delta P50 (mean, min, max change relative to the original baseline). For \texttt{confidence\_query}, the system answers directly from the current forecast's P10/P50/P90 without re-running the model. For \texttt{counterfactual}, the system declines to modify historical inputs and redirects the user toward forward-looking alternatives.
+
+
+
 % =====================================================================
 \section{Evaluation Protocol}
 % =====================================================================
@@ -212,6 +250,12 @@ Metrics are organised along three axes:
 \begin{itemize}
   \item \textbf{Feature completeness}: fraction of expected feature categories (trend, uncertainty, attribution, risk, regime shift) covered by at least one keyword in the text.
 \end{itemize}
+
+
+\subsection{Extension 2}
+
+Extension~2 is evaluated as a dialogue system across two modes. \textit{Intent-only} mode tests the parser without running Chronos-2, reporting intent accuracy and Task Completion Rate (TCR). \textit{Full-pipeline} mode runs Chronos-2 and NLI, additionally reporting mean NLI consistency ($\geq 0.70$ = pass) and delta faithfulness (whether the response correctly describes the direction of the P50 change). Multi-turn state persistence is verified by running sequences of turns and checking that modifications from earlier turns remain in effect. Three query sets are used: DEV (40), TEST (30), and BLIND (10 --- the reported score).
+
 
 % =====================================================================
 \section{Experiments}
@@ -278,6 +322,91 @@ The Template verbalizer reaches perfect feature completeness (1.000) by construc
 Across all 200 windows, \texttt{temp\_min} is ranked as the top covariate in 199 cases ($38.2\% \pm 1.8\%$ mean relative impact), confirming its dominant influence on the \texttt{temp\_max} forecast.
 
 
+\subsection{Extension 2}
+
+\subsubsection{Data}
+
+The full-pipeline evaluation uses a 100-step window from the ETTh1 dataset~\cite{zhou2021informer} (hourly electricity transformer temperature) with ten named covariates including \texttt{marketing\_spend}, \texttt{weather\_temperature}, \texttt{holiday\_proximity}, and \texttt{social\_media\_mentions}, among others.
+
+\subsubsection{Experimental Setup}
+
+\textbf{Hardware.} CPU (Intel/AMD); no GPU required for intent-only evaluation. Full-pipeline evaluation runs Chronos-2-small on CPU.
+
+\textbf{Evaluation sets.} Three query sets with strict separation: DEV (40 queries, used during parser development), TEST (30 queries, intermediate validation), and BLIND (10 queries, written after patterns were frozen --- the reported score).
+
+\textbf{Evaluation modes.}
+\begin{itemize}
+  \item \textit{Intent-only} (\texttt{evaluate}): tests parser accuracy, covariate resolution, horizon extraction, and Task Completion Rate (TCR) without running Chronos-2.
+  \item \textit{Full pipeline} (\texttt{evaluate-full}): runs Chronos-2 and NLI for each query; additionally measures NLI consistency and delta faithfulness (whether the response correctly describes the direction of the P50 change).
+  \item \textit{Multi-turn}: three two-turn sequences run through the public \texttt{query()} interface to verify that covariate modifications persist correctly across turns.
+\end{itemize}
+
+\subsubsection{Results}
+
+\paragraph*{a) Intent Classification}
+
+The rule-based parser achieves 100\% intent accuracy and TCR on all three query sets (DEV: 40 queries, TEST: 30, BLIND: 10). Table~\ref{tab:ext2_intent} reports the per-intent breakdown on the BLIND set.
+
+\begin{table}[h]
+\centering
+\caption{Intent classification accuracy on BLIND set (10 queries).}
+\label{tab:ext2_intent}
+\begin{tabular}{lcc}
+\toprule
+Intent Type & Correct & Accuracy \\
+\midrule
+\texttt{change\_horizon}   & 2/2 & 100\% \\
+\texttt{confidence\_query} & 2/2 & 100\% \\
+\texttt{counterfactual}    & 1/1 & 100\% \\
+\texttt{remove\_covariate} & 2/2 & 100\% \\
+\texttt{scale\_covariate}  & 3/3 & 100\% \\
+\midrule
+\textbf{Overall}           & \textbf{10/10} & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph*{b) Full Pipeline}
+
+Table~\ref{tab:ext2_full} reports full-pipeline metrics on the BLIND set using real ETTh1 data.
+
+\begin{table}[h]
+\centering
+\caption{Full-pipeline evaluation on BLIND set (ETTh1, 10 queries).}
+\label{tab:ext2_full}
+\begin{tabular}{lc}
+\toprule
+Metric & Value \\
+\midrule
+Intent accuracy       & 100\% \\
+Task Completion Rate  & 100\% \\
+NLI consistency (mean) & 0.9649 \\
+NLI PASS rate         & 100\% \\
+Delta faithfulness    & 100\% (7 verifiable) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph*{c) Multi-Turn State Persistence}
+
+Three two-turn sequences were evaluated: (1) remove covariate then query confidence, (2) scale covariate then change horizon, (3) two successive covariate modifications. All three sequences passed, with 100\% intent accuracy and 100\% state persistence across 2 verifiable checks per run. In an extended stress test, the system executes three successive modifications --- remove \texttt{weather\_temperature}, double \texttt{social\_media\_mentions}, change horizon to 48 steps --- followed by a confidence query. The removed covariate remained removed, the scaled covariate remained doubled, the horizon remained 48, and all tasks completed successfully.
+
+\paragraph*{d) LLM Fallback}
+
+The optional LLM fallback tier was evaluated on five indirect queries that the rule-based parser could not resolve. The rule-only parser achieved 3/5 accuracy; enabling the LLM fallback with structured-output normalisation recovered both unknown cases, achieving 5/5 accuracy at a mean latency of 1.31 seconds per query.
+
+\paragraph*{e) Qualitative Case Study}
+
+To demonstrate end-to-end integration, we walk through a four-turn dialogue using a synthetic scenario with ten covariates over a 14-step horizon.
+
+\textbf{Turn~1 --- Covariate removal.} Query: \textit{``What if there were no marketing spend?''} The system zeros out \texttt{marketing\_spend} and re-runs Chronos-2. The delta P50 is near zero (mean $= +0.0007$), indicating low marginal impact; \texttt{previous\_day\_sales} emerges as the dominant driver (30.4\%) once marketing spend is removed. NLI: 0.9594 (PASS).
+
+\textbf{Turn~2 --- Confidence query.} Query: \textit{``How confident are you in this forecast?''} The system answers directly from the modified forecast's P10/P50/P90 --- no re-run. It reports high and stable uncertainty, with mean interval width 0.43 (61.0\% of forecast level), P10~$= 0.49$, P90~$= 0.91$. NLI: 0.9494 (PASS).
+
+\textbf{Turn~3 --- Horizon change.} Query: \textit{``Show me the next three weeks.''} The parser correctly resolves ``three weeks'' to 504 steps (hourly data). The \texttt{marketing\_spend} zeroing from Turn~1 remains in effect. Delta P50: mean $= -0.0148$. NLI: 0.9438 (PASS).
+
+\textbf{Turn~4 --- Historical counterfactual.} Query: \textit{``What would have happened if sales had been higher last month?''} The system declines to modify historical inputs, identifies \texttt{previous\_day\_sales} as the target, and redirects: \textit{``I can show you what the forecast would look like if `previous\_day\_sales' were removed or scaled in future periods.''} NLI: 0.9494 (PASS).
+
 % =====================================================================
 \section{Conclusions and Takeaways}
 % =====================================================================
@@ -325,6 +454,11 @@ Qwen Team,
 ``Qwen2.5 Technical Report,''
 \textit{arXiv preprint arXiv:2412.15115}, 2024.
 
+\bibitem{zhou2021informer}
+H.~Zhou, S.~Zhang, J.~Peng, et~al.,
+``Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting,''
+in \textit{Proc.\ AAAI}, 2021, pp.~11106--11115.
+
 \end{thebibliography}
 
 % =====================================================================
@@ -349,5 +483,17 @@ Suppose the LLM had instead produced:
 The NLI premise for the first sentence contains only the flat trend classification and a slope of $+0.0415$ --- no mention of ``declining,'' ``seasonal patterns,'' or ``temperature inversions.''
 The NLI model assigns an entailment probability near~0.05, correctly flagging the direction reversal (flat vs.\ declining) and the hallucinated domain-specific causal content.
 This illustrates the key failure mode of the LLM verbalizer: despite the grounding constraints in the prompt, the model can introduce plausible-sounding but factually unsupported language that the NLI metric reliably catches.
+
+
+\vspace{4mm}
+\textbf{Extension 2: Illustrative Success and Failure Cases}
+
+\textbf{Success case (actionable intent).}
+Query: \textit{``What if there were no marketing spend?''}
+The parser correctly classifies the intent as \texttt{remove\_covariate}, extracts \texttt{marketing\_spend} as the target, zeros out the covariate channel, and re-runs Chronos-2. The generated response correctly reports that \texttt{previous\_day\_sales} becomes the dominant driver (30.4\%) and that the forecast remains sharply rising. Delta P50: mean $= +0.0007$. NLI consistency: 0.9594 (PASS).
+
+\textbf{Failure case (non-actionable intent).}
+Query: \textit{``What would have happened if sales had been higher last month?''}
+The system correctly classifies this as \texttt{counterfactual} and declines to execute it, since only future inputs can be modified. Rather than failing silently, it redirects the user: \textit{``I can show you what the forecast would look like if `previous\_day\_sales' were removed or scaled in future periods.''} This illustrates the system's graceful degradation: non-actionable queries are handled with an informative response rather than an error.
 
 \end{document}

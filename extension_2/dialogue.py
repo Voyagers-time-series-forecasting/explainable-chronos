@@ -161,7 +161,7 @@ class DialogueSystem:
 
         # Build components
         config = PipelineConfig(seed=seed)
-        self._provider = ChronosForecastProvider()
+        self._provider = ChronosForecastProvider(enable_attention=True)
         self._pipeline = VerbalizationPipeline(
             forecast_provider=self._provider,
             verbalizer=TemplateVerbalizer(seed=seed),

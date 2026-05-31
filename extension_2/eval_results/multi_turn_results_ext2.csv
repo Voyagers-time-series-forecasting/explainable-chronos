@@ -1,0 +1,7 @@
+sequence,turn,query,expected_intent,parsed_intent,intent_correct,covariate_correct,horizon_correct,modification_applied,state_persisted,task_completed,error
+Remove covariate then query confidence,1,Remove marketing_spend from the forecast.,remove_covariate,remove_covariate,True,True,True,True,,True,
+Remove covariate then query confidence,2,How confident are you in this forecast?,confidence_query,confidence_query,True,True,True,False,True,True,
+Scale covariate then change horizon,1,What if website traffic increased by 50%?,scale_covariate,scale_covariate,True,True,True,True,,True,
+Scale covariate then change horizon,2,Show me the next 7 days.,change_horizon,change_horizon,True,True,True,True,,True,
+Two successive covariate modifications,1,Remove shipping delay hours.,remove_covariate,remove_covariate,True,True,True,True,,True,
+Two successive covariate modifications,2,Also double the marketing spend.,scale_covariate,scale_covariate,True,True,True,True,True,True,

@@ -73,7 +73,7 @@ def _make_eval_scenario(
         df = load_dataset_df(spec)
         history = df["OT"].values[-n_history:].astype(np.float64)
 
-        cov_cols = [c for c in df.columns if c != "OT"]
+        cov_cols = [c for c in df.columns if c not in ("OT", "date")]
         n_real = min(len(cov_cols), len(covariate_names))
         cov_values = df[cov_cols[:n_real]].values[-n_history:].astype(np.float64)
 
