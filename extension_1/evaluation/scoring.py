@@ -320,3 +320,82 @@ class NLIConsistencyScorer:
             threshold=self.threshold,
             contradiction_rate=contradiction_rate,
         )
+
+
+# ────────────── Semantic similarity scorer ────────────────────────────
+class SemanticSimilarityScorer:
+    """Cosine semantic similarity between LLM output and template reference.
+
+    Uses a lightweight SBERT model (``all-MiniLM-L6-v2``) to embed both
+    texts and returns their cosine similarity in ``[-1, 1]`` (typically
+    ``[0, 1]`` for natural language).
+
+    A score close to 1.0 means the LLM text covers similar semantic content
+    to the template draft; a low score flags significant semantic drift.
+
+    Falls back to Jaccard token-overlap when ``sentence-transformers`` is
+    not installed.
+    """
+
+    DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        device: str = "cpu",
+    ) -> None:
+        self.model_name = model_name
+        self.device = device
+        self._model: Any = None
+
+    def _load(self) -> Any:
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+                self._model = SentenceTransformer(self.model_name, device=self.device)
+                logger.info("SemanticSimilarityScorer: loaded %s", self.model_name)
+            except ImportError:
+                logger.warning(
+                    "sentence-transformers not installed — "
+                    "falling back to Jaccard token-overlap similarity."
+                )
+                self._model = "fallback"
+        return self._model
+
+    def score(self, llm_text: str, template_text: str) -> float:
+        """Return cosine similarity in ``[0, 1]`` between *llm_text* and *template_text*.
+
+        Parameters
+        ----------
+        llm_text : str
+            The generated LLM verbalization.
+        template_text : str
+            The template-generated reference text (``draft_summary``).
+        """
+        if not llm_text.strip() or not template_text.strip():
+            return 0.0
+
+        model = self._load()
+        if model == "fallback":
+            return self._jaccard(llm_text, template_text)
+
+        embeddings = model.encode(
+            [llm_text, template_text],
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        a, b = embeddings[0], embeddings[1]
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom < 1e-9:
+            return 0.0
+        return float(np.clip(np.dot(a, b) / denom, 0.0, 1.0))
+
+    @staticmethod
+    def _jaccard(a: str, b: str) -> float:
+        """Token-level Jaccard similarity as a no-model fallback."""
+        sa = set(a.lower().split())
+        sb = set(b.lower().split())
+        if not sa or not sb:
+            return 0.0
+        return len(sa & sb) / len(sa | sb)
+
