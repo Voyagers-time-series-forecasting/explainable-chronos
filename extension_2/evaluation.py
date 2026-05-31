@@ -1208,11 +1208,13 @@ def main(
     run_full_pipeline: bool = False,
     seed: int = 42,
     evaluation_set: str = "heldout",
+    output_dir: Optional[Path | str] = None,
 ) -> None:
     """Entry point for Extension 2 evaluation."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-    EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    _save_eval_config(EVAL_DIR, seed, evaluation_set, run_full_pipeline)
+    out = Path(output_dir) if output_dir else EVAL_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    _save_eval_config(out, seed, evaluation_set, run_full_pipeline)
 
     logger.info(
         "Running Extension 2 evaluation (set=%s, full_pipeline=%s) ...",
@@ -1225,26 +1227,25 @@ def main(
         run_full_pipeline=run_full_pipeline,
         evaluation_set=evaluation_set,
     )
-    df.to_csv(EVAL_DIR / "evaluation_results_ext2.csv", index=False)
+    df.to_csv(out / "evaluation_results_ext2.csv", index=False)
     print_evaluation_report(df)
-    write_evaluation_report(df, save_dir=EVAL_DIR)
+    write_evaluation_report(df, save_dir=out)
 
-    # Always report blind-set accuracy (patterns must not be tuned further on it)
     logger.info("Running blind-set evaluation (final reported score) ...")
     df_blind = run_dialogue_evaluation(
         seed=seed,
         run_full_pipeline=False,
         evaluation_set="blind",
     )
-    df_blind.to_csv(EVAL_DIR / "blind_results_ext2.csv", index=False)
+    df_blind.to_csv(out / "blind_results_ext2.csv", index=False)
     print_evaluation_report(df_blind)
 
     logger.info("Running multi-turn state-persistence evaluation ...")
     df_mt = run_multi_turn_evaluation(seed=seed)
-    df_mt.to_csv(EVAL_DIR / "multi_turn_results_ext2.csv", index=False)
+    df_mt.to_csv(out / "multi_turn_results_ext2.csv", index=False)
     print_multi_turn_report(df_mt)
 
-    logger.info("Results saved to %s", EVAL_DIR)
+    logger.info("Results saved to %s", out)
 
 
 if __name__ == "__main__":
