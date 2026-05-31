@@ -1,7 +1,7 @@
 """LLM-refined forecast verbalizer.
 
 Uses a causal LM (Qwen family) to rewrite template-generated summaries into
-fluent professional prose while preserving every numerical fact.
+fluent prose while preserving every numerical fact.
 
 Model selection (automatic):
   - CUDA available  → ``Qwen/Qwen2.5-7B-Instruct`` loaded in fp16
@@ -29,9 +29,6 @@ from extension_1.verbalization.template import TemplateVerbalizer
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_ANALYST = (
     "You are a quantitative analyst writing concise, professional forecast summaries. "
@@ -53,10 +50,6 @@ _SYSTEM_PROMPT_EXECUTIVE = (
     "3. Maximum 3-4 sentences. Focus on what matters for a business decision.\n"
     "4. Do NOT add causal claims or speculation not present in the draft."
 )
-
-# ---------------------------------------------------------------------------
-# Few-shot examples (cover three representative scenarios)
-# ---------------------------------------------------------------------------
 
 _FEW_SHOT_ANALYST = """\
 ## Example 1
@@ -109,26 +102,12 @@ this stability. Wind is the main factor holding values back, accounting for 38.1
 driver influence.
 """
 
-# ---------------------------------------------------------------------------
-# Backwards-compatible aliases
-# ---------------------------------------------------------------------------
-_SYSTEM_PROMPT = _SYSTEM_PROMPT_ANALYST
-_FEW_SHOT_BLOCK = _FEW_SHOT_ANALYST
-
 
 class LLMVerbalizer:
     """LLM-refined verbalization with few-shot prompting.
 
-    Takes the template-based output and uses an LLM to rewrite it for
-    fluency while strictly preserving factual claims. Two or three
-    worked examples are included in every prompt.
-
-    Parameters
-    ----------
-    template_verbalizer : TemplateVerbalizer, optional
-    model_id : str, optional
-        HuggingFace model ID. Defaults to the hardware-appropriate model
-        selected by :func:`~extension_1.config.select_llm_model`.
+    Rewrites the template draft for fluency while strictly preserving all
+    numerical facts. Supports two audience personas sharing one model instance.
     """
 
     def __init__(
@@ -145,12 +124,12 @@ class LLMVerbalizer:
         self._lock = threading.Lock()
 
     def share_model_from(self, other: "LLMVerbalizer") -> None:
-        """Reuse an already-loaded model and tokenizer from *other* (avoids double loading)."""
+        """Reuse an already-loaded model and tokenizer to avoid loading twice."""
         self._model = other._model
         self._processor = other._processor
 
     def _load_model(self) -> None:
-        """Load model on first call (thread-safe lazy initialisation)."""
+        """Lazy, thread-safe model load."""
         if self._model is not None:
             return
         with self._lock:
@@ -203,11 +182,10 @@ class LLMVerbalizer:
         response = self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
         response = response.replace("<eos>", "").replace("<bos>", "").strip()
 
-        # Strip "REWRITE:" prefix the model may echo back
         if response.upper().startswith("REWRITE:"):
             response = response[len("REWRITE:"):].strip()
 
-        # Split on periods followed by space/end of string to avoid splitting decimals!
+        # Split on periods followed by whitespace/end; avoids splitting decimal numbers
         sentences = [s.strip() + "." for s in re.split(r'\.(?:\s+|$)', response) if s.strip()]
         grounding = {
             f"sentence_{i}": {
@@ -231,7 +209,7 @@ class LLMVerbalizer:
         features: ForecastFeatures,
         attribution: AttributionResult | None = None,
     ) -> list[tuple[str, str, str]]:
-        """Build structured (subject, predicate, object) triples for context."""
+        """Build structured (subject, predicate, object) triples for the prompt context."""
         triples: list[tuple[str, str, str]] = [
             ("P50_trend", "is", features.trend_direction),
             ("trend_magnitude", "is", features.trend_magnitude),

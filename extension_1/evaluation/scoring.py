@@ -1,19 +1,10 @@
 """
-NLI-based consistency scorer.
+NLI-based consistency scorer for forecast verbalizations.
 
-Evaluates whether a verbalized forecast summary is factually consistent
-with the underlying numerical features using a Natural Language
-Inference (NLI) model from HuggingFace.
-
-Design note
------------
-The scorer uses the ``text-classification`` pipeline with ``text_pair``
-input so that the model's native 3-class NLI head
-(ENTAILMENT / NEUTRAL / CONTRADICTION) is invoked directly.
-
-This is different from ``zero-shot-classification``, which reformulates
-the input as a topic-label problem and never exposes the contradiction
-class — producing inflated, unreliable entailment scores.
+Uses ``text-classification`` with ``text_pair`` input so the model's native
+3-class NLI head (ENTAILMENT / NEUTRAL / CONTRADICTION) is invoked directly.
+This matters: ``zero-shot-classification`` reformulates the task as a topic-label
+problem, hiding the contradiction class and inflating entailment scores.
 """
 
 from __future__ import annotations
@@ -31,19 +22,9 @@ from extension_1.verbalization.types import VerbalizationResult
 logger = logging.getLogger(__name__)
 
 
-# ───────────────── result dataclasses ─────────────────────────────────
 @dataclass
 class SentenceScore:
-    """NLI scores for a single sentence.
-
-    Attributes
-    ----------
-    sentence : str
-    premise : str
-    entailment_prob : float
-    neutral_prob : float
-    contradiction_prob : float
-    """
+    """NLI scores for a single (premise, hypothesis) pair."""
 
     sentence: str
     premise: str
@@ -54,32 +35,17 @@ class SentenceScore:
 
 @dataclass
 class ConsistencyReport:
-    """Aggregated NLI consistency report.
+    """Aggregated NLI consistency report for a verbalization."""
 
-    Attributes
-    ----------
-    overall_score : float
-        Mean entailment probability across all sentences.
-    sentence_scores : list[SentenceScore]
-    is_consistent : bool
-        True when ``overall_score >= threshold``.
-    threshold : float
-    contradiction_rate : float
-        Fraction of sentences whose entailment probability is below 0.30,
-        indicating near-contradictions with their numerical premise.
-        This is a direct failure detector that is not captured by the mean.
-    """
-
-    overall_score: float
+    overall_score: float        # mean entailment probability across all sentences
     sentence_scores: List[SentenceScore]
-    is_consistent: bool
+    is_consistent: bool         # True when overall_score >= threshold
     threshold: float
-    contradiction_rate: float = 0.0
+    contradiction_rate: float = 0.0  # fraction of sentences with entailment_prob < 0.30
 
 
-# ──────────── premise renderer ────────────────────────────────────────
 def render_premise(grounding: Dict[str, Any]) -> str:
-    """Convert a grounding dictionary to an unambiguous English premise."""
+    """Convert a grounding dictionary to an unambiguous English premise for NLI."""
     gtype = grounding.get("type", "unknown")
 
     if gtype == "trend":
@@ -152,7 +118,7 @@ def render_premise(grounding: Dict[str, Any]) -> str:
         end = grounding.get("end_value", "?")
         pct = grounding.get("pct_change", 0)
         direction = grounding.get("end_direction", "unknown")
-        tps = grounding.get("turning_points", [])  # list of (step, value, kind)
+        tps = grounding.get("turning_points", [])
         tp_parts: list[str] = []
         for tp in tps[:3]:
             step, val, kind = tp if len(tp) == 3 else (*tp, "peak")
@@ -184,24 +150,25 @@ def render_premise(grounding: Dict[str, Any]) -> str:
             return f"The model's temporal attention focused on: {', '.join(parts)}."
         return "Temporal attention data is available."
 
-    # Generic fallback — filter out non-serialisable values to avoid empty strings
+    # Fallback: serialise any scalar values present in the grounding dict
     parts = [f"{k}: {v}" for k, v in grounding.items() if isinstance(v, (str, int, float, bool))]
     return " ".join(parts) if parts else "Grounding information is available."
 
 
-# ────────────── NLI Consistency Scorer ────────────────────────────────
 class NLIConsistencyScorer:
-    """Score factual consistency of a verbalization using NLI.
+    """Score factual consistency of a verbalization using NLI entailment.
 
-    Parameters
-    ----------
-    model_name : str
-        HuggingFace model identifier (must support zero-shot NLI).
-    device : str
-        Torch device string.
-    threshold : float
-        Entailment probability above which a sentence is consistent.
+    Lazy-loads the NLI model on first call.
     """
+
+    # Label sets for BART-large-MNLI (and most MNLI-trained models).
+    # The model returns labels in arbitrary order; we look them up by name.
+    _ENTAILMENT_LABELS = {"entailment", "ENTAILMENT", "LABEL_2"}
+    _NEUTRAL_LABELS    = {"neutral",    "NEUTRAL",    "LABEL_1"}
+    _CONTRA_LABELS     = {"contradiction", "CONTRADICTION", "LABEL_0"}
+
+    # Sentences with entailment_prob below this are flagged as near-contradictions.
+    _CONTRADICTION_THRESHOLD = 0.30
 
     def __init__(
         self,
@@ -216,31 +183,20 @@ class NLIConsistencyScorer:
 
     def _load(self) -> Any:
         if self._pipeline is None:
-            logger.info("Loading NLI model %s (text-classification / text_pair mode) …", self.model_name)
+            logger.info("Loading NLI model %s …", self.model_name)
             self._pipeline = hf_pipeline(
                 "text-classification",
                 model=self.model_name,
                 device=self.device if self.device != "cpu" else -1,
-                # Return all three NLI class scores so we can read each probability.
-                top_k=None,
+                top_k=None,  # return all three class scores
             )
         return self._pipeline
 
-    # Labels emitted by BART-large-MNLI (and most MNLI-trained models).
-    # The model returns them in arbitrary order; we look them up by name.
-    _ENTAILMENT_LABELS = {"entailment", "ENTAILMENT", "LABEL_2"}
-    _NEUTRAL_LABELS    = {"neutral",    "NEUTRAL",    "LABEL_1"}
-    _CONTRA_LABELS     = {"contradiction", "CONTRADICTION", "LABEL_0"}
-
-    # Entailment probability below this value is flagged as a near-contradiction.
-    _CONTRADICTION_THRESHOLD = 0.30
-
     def _parse_nli_result(self, raw: List[Dict[str, Any]]) -> tuple[float, float, float]:
-        """Extract (entailment, neutral, contradiction) probabilities from raw pipeline output.
+        """Extract (entailment, neutral, contradiction) from raw pipeline output.
 
-        ``text-classification`` with ``top_k=None`` returns a list of
-        ``{"label": str, "score": float}`` dicts — one per class.
-        We look up each label by name to handle different model label schemes.
+        ``text-classification`` with ``top_k=None`` returns one dict per class;
+        labels vary by model (e.g. LABEL_0/1/2 vs entailment/neutral/contradiction).
         """
         probs: dict[str, float] = {item["label"]: item["score"] for item in raw}
         ent = next((v for k, v in probs.items() if k in self._ENTAILMENT_LABELS), 0.0)
@@ -249,20 +205,7 @@ class NLIConsistencyScorer:
         return float(ent), float(neu), float(con)
 
     def score(self, verbalization: VerbalizationResult) -> ConsistencyReport:
-        """Compute NLI consistency for every sentence.
-
-        Each (premise, sentence) pair is fed to the NLI model as a
-        ``text_pair`` input so the model's 3-class head
-        (ENTAILMENT / NEUTRAL / CONTRADICTION) is used directly.
-
-        Parameters
-        ----------
-        verbalization : VerbalizationResult
-
-        Returns
-        -------
-        ConsistencyReport
-        """
+        """Compute NLI entailment for each (grounding premise, sentence) pair."""
         pipe = self._load()
         sentence_scores: List[SentenceScore] = []
 
@@ -283,9 +226,7 @@ class NLIConsistencyScorer:
                 )
                 continue
 
-            # ── Correct NLI call: premise + sentence as a text pair ──────────
-            # The model reads both texts jointly through cross-attention and
-            # returns 3-class probabilities from its NLI head.
+            # Feed premise + sentence as a text_pair so the 3-class NLI head is used directly.
             raw = pipe({"text": premise, "text_pair": sentence})
             ent, neu, con = self._parse_nli_result(raw)
 
@@ -312,7 +253,6 @@ class NLIConsistencyScorer:
                 np.mean([s.entailment_prob < self._CONTRADICTION_THRESHOLD for s in sentence_scores])
             )
 
-
         return ConsistencyReport(
             overall_score=overall,
             sentence_scores=sentence_scores,
@@ -322,19 +262,12 @@ class NLIConsistencyScorer:
         )
 
 
-# ────────────── Semantic similarity scorer ────────────────────────────
 class SemanticSimilarityScorer:
-    """Cosine semantic similarity between LLM output and template reference.
+    """Cosine similarity between LLM output and template reference via SBERT.
 
-    Uses a lightweight SBERT model (``all-MiniLM-L6-v2``) to embed both
-    texts and returns their cosine similarity in ``[-1, 1]`` (typically
-    ``[0, 1]`` for natural language).
-
-    A score close to 1.0 means the LLM text covers similar semantic content
-    to the template draft; a low score flags significant semantic drift.
-
-    Falls back to Jaccard token-overlap when ``sentence-transformers`` is
-    not installed.
+    A score near 1.0 means the LLM text is semantically close to the template draft;
+    a low score flags drift. Falls back to Jaccard token-overlap if
+    ``sentence-transformers`` is not installed.
     """
 
     DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -363,15 +296,7 @@ class SemanticSimilarityScorer:
         return self._model
 
     def score(self, llm_text: str, template_text: str) -> float:
-        """Return cosine similarity in ``[0, 1]`` between *llm_text* and *template_text*.
-
-        Parameters
-        ----------
-        llm_text : str
-            The generated LLM verbalization.
-        template_text : str
-            The template-generated reference text (``draft_summary``).
-        """
+        """Return cosine similarity in [0, 1] between *llm_text* and *template_text*."""
         if not llm_text.strip() or not template_text.strip():
             return 0.0
 
@@ -398,4 +323,3 @@ class SemanticSimilarityScorer:
         if not sa or not sb:
             return 0.0
         return len(sa & sb) / len(sa | sb)
-

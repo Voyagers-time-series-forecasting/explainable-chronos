@@ -5,68 +5,56 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-# ──────────────────────────────── seeds ────────────────────────────────
 RANDOM_SEED: int = 42
 
-# ──────────────────────────── forecast defaults ───────────────────────
+# Forecast defaults
 DEFAULT_HORIZON: int = 14
 HISTORY_TAIL_LENGTH: int = 5
 
-# ──────────────── numerical stability ─────────────────────────────────
 EPSILON: float = 1e-9  # guard against division by zero
 
-# ──────────────── quantile levels ─────────────────────────────────────
+# Quantile levels
 QUANTILE_LOW: float = 0.10   # P10
 QUANTILE_MID: float = 0.50   # P50
 QUANTILE_HIGH: float = 0.90  # P90
 
-# ──────────────────────── trend classification ────────────────────────
+# Trend classification thresholds (normalised slope)
 SHARP_THRESHOLD: float = 0.05
 MODERATE_THRESHOLD: float = 0.02
 
-# ──────────────────── uncertainty classification ──────────────────────
+# Uncertainty classification (relative interval width)
 HIGH_UNCERTAINTY_THRESHOLD: float = 0.30
 LOW_UNCERTAINTY_THRESHOLD: float = 0.10
 
-# ──────────── uncertainty width-trend classification ──────────────────
+# Uncertainty width-trend classification (interval width slope per step)
 WIDENING_THRESHOLD: float = 0.01
 NARROWING_THRESHOLD: float = -0.01
 
-# ─────────────────────── tail-risk thresholds ─────────────────────────
+# Tail-risk flags
 DOWNSIDE_RISK_FACTOR: float = 0.80   # min(P10) < last_obs * factor
 UPSIDE_POTENTIAL_FACTOR: float = 1.20  # max(P90) > last_obs * factor
 
-# ──────────────────── regime-shift detection ──────────────────────────
+# Regime-shift detection (Welch t-test p-value threshold)
 REGIME_SHIFT_PVALUE: float = 0.05
 
-# ──────────────────── interval asymmetry ──────────────────────────────
-ASYMMETRY_THRESHOLD: float = 0.10  # |asym| < this → "symmetric"
+# Interval asymmetry: |asym| < this → classified as "symmetric"
+ASYMMETRY_THRESHOLD: float = 0.10
 
-# ────────────────────── NLI consistency scorer ────────────────────────
+# NLI consistency scorer
 NLI_MODEL_NAME: str = "facebook/bart-large-mnli"
 CONSISTENCY_THRESHOLD: float = 0.70
 
-# NLI score decomposition weights (entailment + neutral + contradiction = 1)
-NLI_NEUTRAL_WEIGHT: float = 0.60
-NLI_CONTRADICTION_WEIGHT: float = 0.40
-
-# ────────────────────── attribution ───────────────────────────────────
+# Attribution
 ATTRIBUTION_TOP_K: int = 5
 
-# ─────────────────────── LLM model selection ──────────────────────────
-# CPU-only (Colab free tier, local dev): compact 1.8B model
-LLM_MODEL_CPU: str = "Qwen/Qwen1.5-1.8B-Chat"
-# CUDA GPU available: use the 7B Instruct model in fp16 (~14 GB VRAM)
-LLM_MODEL_CUDA: str = "Qwen/Qwen2.5-7B-Instruct"
+# LLM model selection
+LLM_MODEL_CPU: str = "Qwen/Qwen1.5-1.8B-Chat"       # compact; fits in RAM on CPU
+LLM_MODEL_CUDA: str = "Qwen/Qwen2.5-7B-Instruct"    # 7B in fp16 (~14 GB VRAM)
 
 
 def select_llm_model() -> str:
-    """Return the best available LLM model ID based on hardware.
-
-    Colab T4 / better: ``Qwen2.5-7B-Instruct`` loaded in fp16.
-    CPU-only: ``Qwen1.5-1.8B-Chat`` (compact, fits in RAM).
-    """
-    import torch  # local import — keeps config importable without torch
+    """Return the appropriate LLM model ID based on available hardware."""
+    import torch  # local import keeps config importable without torch
     return LLM_MODEL_CUDA if torch.cuda.is_available() else LLM_MODEL_CPU
 
 
@@ -74,8 +62,8 @@ def select_llm_model() -> str:
 class PipelineConfig:
     """Aggregated runtime configuration passed through the pipeline.
 
-    All fields default to the module-level constants above so callers
-    only need to override what they change.
+    All fields default to the module-level constants so callers only need
+    to override what they change.
     """
 
     seed: int = RANDOM_SEED

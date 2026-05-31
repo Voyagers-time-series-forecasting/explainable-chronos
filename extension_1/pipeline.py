@@ -1,4 +1,4 @@
-"""Pipeline — orchestrates the full end-to-end pipeline."""
+"""Orchestrates forecast; features; attribution; verbalization; scoring."""
 
 from __future__ import annotations
 
@@ -23,16 +23,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PipelineResult:
-    """Complete output of a single pipeline run.
-
-    Attributes
-    ----------
-    forecast : ForecastDict
-    features : ForecastFeatures
-    attribution : AttributionResult | None
-    verbalization : VerbalizationResult
-    consistency_report : ConsistencyReport
-    """
+    """Complete output of a single pipeline run."""
 
     forecast: ForecastDict
     features: ForecastFeatures
@@ -44,15 +35,7 @@ class PipelineResult:
 
 
 class VerbalizationPipeline:
-    """End-to-end forecast verbalization and consistency pipeline.
-
-    Parameters
-    ----------
-    forecast_provider : ChronosForecastProvider
-    verbalizer : TemplateVerbalizer | LLMVerbalizer
-    scorer : NLIConsistencyScorer
-    config : PipelineConfig, optional
-    """
+    """End-to-end forecast verbalization and consistency scoring."""
 
     def __init__(
         self,
@@ -73,21 +56,7 @@ class VerbalizationPipeline:
         covariates: CovariateSet | None = None,
         future_covariates: CovariateSet | None = None,
     ) -> PipelineResult:
-        """Execute the full pipeline.
-
-        Parameters
-        ----------
-        time_series : np.ndarray | pd.Series
-        horizon : int, optional
-        covariates : CovariateSet
-            Required. Past covariate arrays aligned with the history window.
-        future_covariates : CovariateSet, optional
-            Future covariate arrays aligned with the forecast horizon.
-
-        Returns
-        -------
-        PipelineResult
-        """
+        """Run the full pipeline for a single forecast window."""
         if covariates is None:
             raise ValueError("covariates is required — univariate mode is not supported.")
 
@@ -110,9 +79,7 @@ class VerbalizationPipeline:
         else:
             forecast, attention_weights = forecast_result, None
 
-        logger.info("Forecast produced (P10/P50/P90 × %d steps).", h)
-
-        # Stage A — Feature extraction
+        # Stage B — Feature extraction
         features = extract_features(forecast, config=self.config)
         logger.info(
             "Features: trend=%s %s, uncertainty=%s %s",
@@ -120,7 +87,7 @@ class VerbalizationPipeline:
             features.uncertainty_level, features.uncertainty_trend,
         )
 
-        # Stage B — Covariate attribution (attention rollout)
+        # Stage C — Covariate attribution (attention rollout)
         attribution = AttentionAttributor(
             top_k=self.config.attribution_top_k,
         ).explain(covariates, attention_weights=attention_weights)
@@ -130,11 +97,11 @@ class VerbalizationPipeline:
             attribution.attributions[0].relative_impact_pct if attribution.attributions else 0,
         )
 
-        # Stage C — Verbalization
+        # Stage D — Verbalization
         verbalization = self.verbalizer.verbalize(features, attribution=attribution)
         logger.info("Verbalization: %s", verbalization.summary)
 
-        # Stage D — Consistency scoring
+        # Stage E — NLI consistency scoring
         report = self.scorer.score(verbalization)
         logger.info(
             "Consistency: %.4f (%s)",

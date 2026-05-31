@@ -3,7 +3,7 @@ Trajectory verbalization — converts raw trajectory data into prose.
 
 The data (segments, turning points) is computed by
 ``extension_1.features.extractor.extract_trajectory``.
-This module handles the text-generation layer only.
+This module handles text generation only.
 """
 
 from __future__ import annotations
@@ -15,20 +15,11 @@ if TYPE_CHECKING:
 
 
 def verbalize_trajectory(trajectory: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Generate a concrete sentence describing how the P50 curve moves.
+    """Generate a prose sentence describing how the P50 curve moves.
 
-    Parameters
-    ----------
-    trajectory : dict
-        Output of ``extract_trajectory``: keys ``segments``, ``turning_points``,
-        ``start_value``, ``end_value``, ``overall_range``.
-
-    Returns
-    -------
-    sentence : str
-        A single, factually-grounded prose sentence.
-    grounding : dict
-        Structured key-value pairs for NLI consistency scoring.
+    Returns a sentence and a grounding dict for NLI consistency scoring.
+    All parts are joined into a single sentence (not period-separated) so
+    the grounding slot stays 1-to-1 with the NLI sentence list.
     """
     segs = trajectory.get("segments", [])
     tps = trajectory.get("turning_points", [])
@@ -60,11 +51,6 @@ def verbalize_trajectory(trajectory: dict[str, Any]) -> tuple[str, dict[str, Any
         f"({pct_change:.1f}% {end_direction} the starting level)"
     )
 
-    # All parts joined with commas into a SINGLE sentence so that the
-    # grounding dict stays 1-to-1 with the NLI sentence list.
-    # The old ". ".join() created multiple sentence fragments from one grounding
-    # slot, which caused every downstream sentence to be scored against the
-    # wrong-type grounding, collapsing NLI scores to ~0.28.
     sentence = ", ".join(parts) + "."
 
     grounding = {
@@ -82,28 +68,16 @@ def verbalize_temporal_focus(
     temporal: list[TemporalAttribution],
     history_length: int,
 ) -> tuple[str, dict[str, Any]]:
-    """Describe when the model focused on the top covariates in the history window.
+    """Describe where in the history window the model's attention peaked for each covariate.
 
     Example output:
-        "The model focused most on temp min (around history step 410), while
-        wind attention peaked near step 280."
-
-    Parameters
-    ----------
-    temporal : list[TemporalAttribution]
-        Per-covariate temporal saliency; ``saliency`` length equals ``history_length``.
-    history_length : int
-        Number of history steps (used to compute positional fractions).
-
-    Returns
-    -------
-    sentence : str
-    grounding : dict
+        "The model focused most on temp min in the final 15% of the history window
+        (around history step 410), while wind attention peaked near step 280."
     """
     if not temporal:
         return "", {}
 
-    # Sort by the peak saliency value so the most concentrated signal comes first.
+    # Sort by peak saliency value so the most concentrated signal comes first
     ranked = sorted(temporal, key=lambda t: t.saliency[t.peak_step], reverse=True)
 
     def _describe_position(peak: int, n: int) -> str:
