@@ -16,6 +16,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 import numpy as np
 
 from extension_1.attribution.types import CovariateSet
+from extension_1.evaluation.qa_scorer import QAFaithfulnessReport
 from extension_1.pipeline import PipelineResult
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,64 @@ def _plot_nli(ax: plt.Axes, result: PipelineResult) -> None:
     ax.set_title("NLI Sentence Scores", fontsize=10, fontweight="bold")
 
 
+_QA_GREEN  = "#27ae60"
+_QA_YELLOW = "#f39c12"
+_QA_RED    = "#c0392b"
+
+
+def _qa_color(score: float) -> str:
+    if score >= 0.8:
+        return _QA_GREEN
+    if score >= 0.5:
+        return _QA_YELLOW
+    return _QA_RED
+
+
+def _plot_qa(ax: plt.Axes, qa_report: QAFaithfulnessReport | None) -> None:
+    """Render a per-slot QA faithfulness table."""
+    ax.axis("off")
+    if qa_report is None:
+        ax.text(0.5, 0.5, "No QA faithfulness data",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=9, color="#888")
+        ax.set_title("QA Faithfulness", fontsize=10, fontweight="bold")
+        return
+
+    overall = qa_report.coverage_score
+    status  = "PASS" if qa_report.is_faithful else "FAIL"
+    status_color = _QA_GREEN if qa_report.is_faithful else _QA_RED
+
+    ax.text(
+        0.0, 1.0,
+        f"QA Coverage — Overall: {overall:.3f}  [{status}]  "
+        f"({qa_report.correct_slots}/{qa_report.total_slots} slots correct)",
+        transform=ax.transAxes, fontsize=9, fontweight="bold",
+        color=status_color, va="top",
+    )
+
+    n = len(qa_report.slot_scores)
+    line_height = 0.88 / max(n, 1)
+    for i, ss in enumerate(qa_report.slot_scores):
+        y = 0.93 - (i + 1) * line_height
+        color = _qa_color(ss.score)
+        # Score badge
+        ax.text(0.0, y, f"{ss.score:.2f}", transform=ax.transAxes,
+                fontsize=7, color=color, fontweight="bold", va="top")
+        # Slot name
+        ax.text(0.06, y, ss.slot_name, transform=ax.transAxes,
+                fontsize=7, color="#555", va="top", style="italic")
+        # Expected → extracted
+        detail = textwrap.shorten(
+            f"expect: {ss.expected_answer!r}  got: {ss.extracted_answer!r}",
+            width=90, placeholder="…",
+        )
+        ax.text(0.22, y, detail, transform=ax.transAxes,
+                fontsize=7, color="#2c3e50", va="top")
+
+    ax.set_title("QA Slot Faithfulness", fontsize=10, fontweight="bold")
+
+
+
 def render_trace(
     result: PipelineResult,
     history: np.ndarray,
@@ -232,6 +291,7 @@ def render_trace(
     output_dir: Path,
     covariates: Optional[CovariateSet] = None,
     future_covariates: Optional[CovariateSet] = None,
+    qa_report: Optional[QAFaithfulnessReport] = None,
 ) -> Path:
     """Render and save a multi-panel trace figure for one pipeline scenario.
 
@@ -261,7 +321,7 @@ def render_trace(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig = Figure(figsize=(16, 11), constrained_layout=True)
+    fig = Figure(figsize=(16, 15), constrained_layout=True)
     canvas = FigureCanvasAgg(fig)
     fig.suptitle(
         f"Trace — {dataset_name}  window {window_idx:02d}  [{verbalizer_type}]",
@@ -269,22 +329,24 @@ def render_trace(
     )
 
     gs = gridspec.GridSpec(
-        3, 2,
+        4, 2,
         figure=fig,
-        height_ratios=[3, 2.2, 1.8],
-        hspace=0.35,
+        height_ratios=[3, 2.2, 1.8, 1.8],
+        hspace=0.40,
         wspace=0.30,
     )
 
-    ax_forecast = fig.add_subplot(gs[0, :])
-    ax_attention = fig.add_subplot(gs[1, 0])
+    ax_forecast    = fig.add_subplot(gs[0, :])
+    ax_attention   = fig.add_subplot(gs[1, 0])
     ax_attribution = fig.add_subplot(gs[1, 1])
-    ax_nli = fig.add_subplot(gs[2, :])
+    ax_nli         = fig.add_subplot(gs[2, :])
+    ax_qa          = fig.add_subplot(gs[3, :])
 
     _plot_forecast(ax_forecast, history, result, actuals, covariates, future_covariates)
     _plot_attention(ax_attention, result)
     _plot_attribution(ax_attribution, result)
     _plot_nli(ax_nli, result)
+    _plot_qa(ax_qa, qa_report)
 
     fname = f"{dataset_name}_w{window_idx:02d}_{verbalizer_type}.png"
     out_path = output_dir / fname
@@ -335,6 +397,28 @@ def render_trace(
             
             f.write("--- 5. FINAL RESULT ---\n")
             f.write(verb_res.summary)
+            f.write("\n\n")
+
+            f.write("--- 6. QA FAITHFULNESS ---\n")
+            if qa_report is not None:
+                f.write(
+                    f"Coverage score : {qa_report.coverage_score:.4f} "
+                    f"({'PASS' if qa_report.is_faithful else 'FAIL'})\n"
+                    f"Correct slots  : {qa_report.correct_slots}/{qa_report.total_slots}\n"
+                )
+                if qa_report.missing_slots:
+                    f.write(f"Missing slots  : {', '.join(qa_report.missing_slots)}\n")
+                f.write("\nSlot-by-slot breakdown:\n")
+                for ss in qa_report.slot_scores:
+                    ok = "OK" if ss.is_correct else "MISS"
+                    f.write(
+                        f"  [{ok}] {ss.slot_name:<28} "
+                        f"score={ss.score:.3f}  conf={ss.qa_confidence:.3f}\n"
+                        f"         expect: {ss.expected_answer!r}\n"
+                        f"         got   : {ss.extracted_answer!r}\n"
+                    )
+            else:
+                f.write("QA scorer was not run for this window.\n")
             f.write("\n")
     except Exception as e:
         logger.warning(f"Failed to write text trace: {e}")

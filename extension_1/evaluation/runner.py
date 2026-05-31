@@ -515,9 +515,11 @@ def run_evaluation(
                 records.append(record)
                 logger.info(
                     "[%s] window %d/%d [%s]  "
-                    "consistency=%.4f  mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
+                    "nli=%.3f  qa=%.3f (%d/%d slots)  "
+                    "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
                     spec.name, w_idx + 1, len(windows), v_type,
                     result.consistency_report.overall_score,
+                    qa_coverage, qa_correct_slots, qa_total_slots,
                     accuracy["mase"],
                     accuracy["fair_mase"],
                     accuracy["coverage_pct"],
@@ -535,6 +537,7 @@ def run_evaluation(
                             output_dir=traces_dir,
                             covariates=cov_set,
                             future_covariates=future_cov_set,
+                            qa_report=qa_report if qa_coverage > 0 else None,
                         )
                     except Exception as te:
                         logger.warning("Trace rendering failed [%s/%s]: %s", spec.name, v_type, te)

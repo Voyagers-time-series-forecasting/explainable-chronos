@@ -332,10 +332,10 @@ class QAFaithfulnessScorer:
 
         for slot in slots:
             try:
-                result = pipe({
-                    "question": slot.question,
-                    "context": verbalization_text,
-                })
+                result = pipe(
+                    question=slot.question,
+                    context=verbalization_text,
+                )
                 extracted = result.get("answer", "").strip()
                 confidence = float(result.get("score", 0.0))
             except Exception as exc:
