@@ -363,8 +363,6 @@ def run_evaluation(
     output_dir: Optional[Path | str] = None,
 ) -> pd.DataFrame:
     """Run LLM evaluation with NLI + semantic similarity vs template."""
-    if verbalizer_names is None:
-        verbalizer_names = ["template"]
 
     mode = EVAL_MODES[mode_key]
     config = PipelineConfig(seed=seed)
