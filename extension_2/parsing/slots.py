@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Iterable, List, Optional
 
-from extension_2.intent_patterns import (
+from extension_2.parsing.patterns import (
     DECREASE_MARKERS,
     FACTOR_WORDS,
     HORIZON_PATTERNS,
@@ -18,6 +18,11 @@ from extension_2.intent_patterns import (
 _PERCENT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _MULTIPLIER_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*x\b")
 _TOKEN_PATTERN = re.compile(r"\b\w+\b")
+
+_WORD_NUM_UNIT = re.compile(
+    r"\b(" + "|".join(HORIZON_WORD_NUMBERS) + r")[\s-]+(hour|day|week|month|period|step)s?\b",
+    re.IGNORECASE,
+)
 
 
 def find_covariate(query: str, covariate_names: List[str]) -> Optional[str]:
@@ -74,25 +79,13 @@ def extract_scale_factor(query: str) -> Optional[float]:
     return None
 
 
-_WORD_NUM_UNIT = re.compile(
-    r"\b("
-    + "|".join(HORIZON_WORD_NUMBERS)
-    + r")[\s-]+(hour|day|week|month|period|step)s?\b",
-    re.IGNORECASE,
-)
-
-
 def extract_horizon(
     query: str,
     horizon_patterns: Iterable[str] = HORIZON_PATTERNS,
 ) -> Optional[int]:
-    """Extract a forecast horizon in steps.
-
-    Handles both digit-based ("7 days") and word-based ("one-month") phrasing.
-    """
+    """Extract a forecast horizon in steps."""
     q = query.lower()
 
-    # Word-number phrasing: "one-month", "two weeks", etc.
     wn_match = _WORD_NUM_UNIT.search(q)
     if wn_match:
         n = HORIZON_WORD_NUMBERS[wn_match.group(1).lower()]

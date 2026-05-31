@@ -246,9 +246,9 @@ Metrics are organised along two axes:
 
 \subsection{Extension 2}
 
-Extension~2 evaluation focuses on the intent parsing pipeline, not the downstream verbalization, so no NLI scoring is needed. Two metrics are reported: \textbf{intent accuracy} (whether the correct intent type was predicted) and \textbf{covariate resolution accuracy} (whether the correct covariate was extracted from the query, for queries that require one). Together these determine the \textbf{Task Completion Rate} (TCR).
+Extension~2 evaluation focuses on the intent parsing pipeline rather than downstream verbalization, so no NLI scoring is needed. Three metrics are reported: \textbf{intent accuracy} (correct intent type), \textbf{covariate resolution accuracy} (correct covariate extracted, for queries that require one), and \textbf{Task Completion Rate} (TCR, the conjunction of both). Accuracy is reported both overall and \textbf{per tier} (among queries handled by each tier), since a high overall score with few queries reaching Tier~2 would not constitute evidence that the BERT classifier is working.
 
-Two query sets are used. The \textbf{example set} (70 queries) merges what were previously separate development and validation splits: all 70 queries were seen during rule-based parser development, so they are not independent test data. They serve as the labeled pool for BERT few-shot inference. The \textbf{test set} (10 queries) was written after both the rule patterns and the example pool were frozen; it was never used during development and is the only set reported as the evaluation score.
+Two query sets are used. The \textbf{example set} (70 queries) was seen during rule-based parser development and serves as the labeled pool for BERT few-shot inference. The \textbf{test set} (25 queries) was written after both the rule patterns and the example pool were frozen. It covers three difficulty levels: original held-out cases (10), ambiguous phrasings where the surface form could suggest the wrong intent (8), and outlier phrasings that rules are unlikely to match and that require Tier~2 or Tier~3 to resolve (7).
 
 Multi-turn state persistence is verified separately by running turn sequences and checking that modifications from earlier turns remain in effect.
 
