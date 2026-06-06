@@ -39,7 +39,7 @@ Course: 01VIXSM, Deep Natural Language Processing, A.Y.\ 2025--2026\\
 
 % =====================================================================
 \begin{abstract}
-We present \textit{Explainable Chronos}, a modular NLP framework built on top of Chronos-2 that makes probabilistic time-series forecasts interpretable and interactively queryable. Extension~1 generates natural-language summaries of quantile forecasts grounded in extracted numerical features and covariate attributions via Attention Rollout, and evaluates each sentence for factual consistency using NLI. Extension~2 adds a conversational interface through which users can query and modify forecasts in plain English; a three-tier intent parser (rule-based, BERT few-shot, LLM fallback) classifies queries into five intent types, applies input modifications, re-runs Chronos-2, and returns a new verbalized response with state preserved across turns. Evaluated on 200 windows of the Weather dataset, Extension~1 achieves mean NLI consistency of 0.7333 (analyst persona) and 0.6858 (executive persona), with semantic similarity to the template reference of 0.8640 and 0.7893 respectively; On a 60-query test set covering standard, ambiguous, and outlier phrasings, Extension~2 achieves 93.3\% intent accuracy, 97.2\% covariate resolution, and 83.3\% task completion rate; the BERT tier (Tier~2) outperforms the rule-based tier on its subset (94.7\% vs.\ 92.5\%), and multi-turn state persistence holds at 100\%.
+We present \textit{Explainable Chronos}, a modular NLP framework built on top of Chronos-2 that makes probabilistic time-series forecasts interpretable and interactively queryable. Extension~1 generates natural-language summaries of quantile forecasts by using  extracted numerical features and covariate attributions via Attention Rollout, and evaluates each sentence for factual consistency using NLI. Extension~2 adds a conversational interface through which users can query and modify forecasts in plain English usinh a three-tier intent parser (rule-based, SBERT few-shot, LLM) classifies queries into five intent types, applies input modifications, re-runs Chronos-2, and returns a new verbalized response. Evaluated on 200 windows of the Weather dataset, Extension~1 achieves mean NLI consistency of 0.7333 (analyst persona) and 0.6858 (executive persona), with semantic similarity to the template reference of 0.8640 and 0.7893 respectively; On a 60-query test set, Extension~2 achieves 93.3\% intent accuracy, 97.2\% covariate resolution, and 83.3\% task completion rate; the SBERT tier (Tier~2) outperforms the rule-based tier on its subset (94.7\% vs.\ 92.5\%), and multi-turn state persistence holds at 100\%.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -70,17 +70,12 @@ Given a Chronos-2 quantile forecast $\hat{\mathbf{y}}^{(q)}$ for quantiles $q \i
   \hat{\mathbf{y}}^{(q)} = \bigl(\hat{y}^{(q)}_1, \dots, \hat{y}^{(q)}_H\bigr), \quad q \in \{0.10, 0.50, 0.90\},
 \end{equation}
 %
-produce a natural-language summary $\mathcal{S} = (s_1, \dots, s_K)$ such that each sentence $s_k$ is factually grounded in a subset of numerical features derived from the quantiles, and then score each sentence for factual consistency via NLI.
+produce a natural-language summary $\mathcal{S} = (s_1, \dots, s_K)$ such that each sentence $s_k$ is factually grounded in a subset of numerical features derived from the forecast.
 
 \vspace{2mm}
 
 \textbf{Output.}
-A verbalization result comprising:
-(a) the paragraph-level summary $\mathcal{S}$;
-(b) per-sentence grounding metadata mapping each $s_k$ to the numerical features that generated it;
-(c) a covariate attribution result containing top-$k$ importance scores derived via Attention Rollout~\cite{abnar2020attentionflow} and per-covariate temporal saliency over the history window;
-(d) a consistency report containing per-sentence NLI entailment scores and an aggregate mean score indicating whether the summary is factually consistent;
-(e) a semantic similarity score measuring how closely the LLM output aligns with the template draft.
+A natural-language verbalization $\mathcal{S} = (s_1, \dots, s_K)$ of the quantile forecast.
 
 \subsection{Extension 2}
 
@@ -95,7 +90,7 @@ Classify $q$ into one of five intent types $\mathcal{I} = \{$\texttt{remove\_cov
 \vspace{2mm}
 
 \textbf{Output.}
-A dialogue response comprising: (a) the classified intent with confidence source; (b) a human-readable description of the modification applied; (c) a new natural-language forecast summary; (d) the delta P50 (change in median forecast relative to the unmodified baseline); (e) an NLI consistency score for the generated response.
+A dialogue response comprising: (a) a human-readable description of the modification applied; (b) a new natural-language forecast summary; (c) the delta P50 (change in median forecast relative to the unmodified baseline).
 
 % =====================================================================
 \section{Methodology}
@@ -146,7 +141,7 @@ We normalise these scores so they sum to 100\%:
 \emph{Temporal saliency.}
 For covariate importance we looked \emph{across} series; for temporal saliency we look \emph{within} each series: which part of its own past did covariate $c$ attend to most? We apply rollout to the time-attention layers for each covariate separately (slice $c$ of the Series dimension; slice~0 is the target), obtaining a $(P \times P)$ rollout matrix $\tilde{T}^{(L)}_c$.
 Each column $p$ of this matrix corresponds to a history patch, and each row $q$ to a current patch; entry $[q,p]$ encodes how much history patch $p$ contributed to current patch $q$.
-We do not care \emph{which} current patch was affected — we want the total importance of each history patch — so we average across all rows:
+We do not care \emph{which} current patch was affected rather we want the total importance of each history patch, so we average across all rows:
 %
 \begin{equation}
   \sigma_c[p] = \frac{1}{P}\sum_{q}\tilde{T}^{(L)}_c[q,\,p].
@@ -172,7 +167,7 @@ We implement two complementary verbalizers.
 A deterministic module that maps each active feature group to a fixed sentence, producing one sentence per feature (trend, trajectory, uncertainty, conditional risks). A rhetorical layer then adds RST-structured connectives~\cite{mann1988rst} (concession, contrast, elaboration, cause) when feature combinations call for them.
 
 \textbf{LLM Verbalizer.}
-The template output acts as a structured draft that a LLM rewrites via few-shot in-context learning. The prompt supplies the numerical features, grounding triples, the draft, and explicit constraints against causal speculation and numerical deviation. Greedy decoding keeps the output deterministic. Two audience modes are supported: \emph{analyst} (uses more technical terminology) and \emph{executive} (plain language for non-technical readers), each with a distinct system prompt and few-shot set while sharing the same model weights. 
+The template output acts as a structured draft that a LLM rewrites via few-shot in-context learning. The prompt supplies the numerical features, grounding triples, the draft, and explicit constraints against causal speculation and numerical deviation. Greedy decoding keeps the output deterministic. Two audience modes are supported: \emph{analyst} (uses more technical terminology) and \emph{executive} (plain language for non-technical readers), each with a distinct system prompt and few-shot set while sharing the same model weights.
 
 \subsection{Extension 2}
 
@@ -185,7 +180,7 @@ Queries are classified using a three-tier pipeline.
 \textbf{Tier 1: rule-based parser.}
 A catalog of regex patterns with explicit priority ordering. When a pattern fires, slot extraction resolves the relevant details: the target covariate via exact match, token overlap, or substring fallback; the scale factor via keywords such as \textit{double} or \textit{halve}, or a percentage; and the new horizon via digit or word-number patterns.
 
-\textbf{Tier 2: BERT few-shot classifier.}
+\textbf{Tier 2: SBERT few-shot classifier.}
 When no rule matches, a sentence-BERT model~\cite{reimers2019sbert} is used to classify the query by nearest-neighbour search a pool of 100 labeled examples. The query and every example are embedded and compared by cosine similarity; the top-$k$ neighbours vote on the intent type. If the best similarity falls below a confidence threshold, the query is passed to Tier 3. Slot extraction then runs on the predicted intent as in Tier 1. 
 
 \textbf{Tier 3: LLM fallback.}
@@ -206,48 +201,6 @@ For \texttt{counterfactual}, the system declines the modification. Because the f
 
 
 % =====================================================================
-\section{Evaluation Protocol}
-% =====================================================================
-
-\subsection{Extension 1}
-
-Our protocol separates two orthogonal questions: (1)~\emph{Is the forecast accurate?} and (2)~\emph{Is the verbalization a faithful and complete description of what the model predicted?}
-
-% ----- 5.1 -----
-\subsubsection{Forecast Accuracy}
-
-Evaluated against observed actuals, independently of the verbalization pipeline.
-
-\begin{itemize}
-  \item \textbf{MASE}: ratio of P50 MAE to a na\"ive one-step baseline (history differences);
-  \item \textbf{Fair MASE}: ratio of P50 MAE to a multi-step naive baseline that repeats the last observed value over the full horizon.
-  \item \textbf{Coverage}: fraction of actuals falling inside the P10--P90 interval;
-\end{itemize}
-
-% ----- 5.2 -----
-\subsubsection{Verbalization Quality}
-
-Only the LLM verbalizer is evaluated in two configurations (\emph{analyst} and \emph{executive}); Metrics are organised along two axes:
-
-\textit{a) Faithfulness: Does the text accurately describe the forecast?}
-\begin{itemize}
-  \item \textbf{NLI consistency}: per-sentence entailment probability from the NLI BART~\cite{lewis2020bart} model, averaged over all $K$ sentences. 
-\end{itemize}
-
-\textit{b) Semantic drift: Does the LLM output stay close to the template reference?}
-\begin{itemize}
-  \item \textbf{Semantic similarity vs.\ template}: cosine similarity between SBERT~\cite{reimers2019sbert} embeddings of the LLM output and the template draft. 
-\end{itemize}
-
-
-\subsection{Extension 2}
-
-Extension~2 evaluation focuses on the intent parsing pipeline rather than downstream verbalization, so no NLI scoring is needed. Three metrics are reported: \textbf{intent accuracy} (correct intent type), \textbf{covariate resolution accuracy} (correct covariate extracted, for queries that require one), and \textbf{Task Completion Rate} (TCR, the conjunction of both). Accuracy is reported both overall and \textbf{per tier} (among queries handled by each tier), since a high overall score with few queries reaching Tier~2 would not constitute evidence that the BERT classifier is working.
-
-Multi-turn state persistence is verified separately by running turn sequences and checking that modifications from earlier turns remain in effect.
-
-
-% =====================================================================
 \section{Experiments}
 % =====================================================================
 
@@ -260,23 +213,18 @@ We evaluate on the Seattle Weather dataset~\cite{vega_seattle_weather}.
 The forecast target is daily maximum temperature (\texttt{temp\_max}), with three meteorological covariates: minimum temperature (\texttt{temp\_min}), precipitation (\texttt{precipitation}), and wind speed (\texttt{wind}).
 
 % ----- 6.2 -----
-\subsubsection{Experimental Setup}
+\subsubsection{Experimental Design}
 
 \textbf{Hardware.} NVIDIA A100 GPU via Google Colab.
 
 \textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (\texttt{Chronos-2-small}~\cite{chronos2}); \texttt{transformers} (\texttt{BART-large-MNLI}~\cite{lewis2020bart} for NLI, \texttt{Qwen2.5-7B-Instruct}~\cite{qwen} for LLM verbalization); \texttt{sentence-transformers} (\texttt{all-MiniLM-L6-v2} for semantic similarity scoring).
 
 \textbf{Validation method.}
-The evaluation protocol from Section~V is applied: forecast accuracy metrics (MASE, coverage) are computed against observed actuals; verbalization quality metrics (NLI consistency, semantic similarity vs.\ template) are computed against the model's own numerical features for both personas.
+We evaluate over 200 scenarios on the test split, each using a history window of 512 steps and a forecast horizon of 96 steps, positioned at evenly spaced starting points. Both LLM personas (\emph{analyst}, \emph{executive}) share the same weights and differ only in system prompt and few-shot examples. Two orthogonal questions drive the protocol: (1)~\emph{Is the forecast accurate?} answered by comparing P50 and P10--P90 against observed actuals; and (2)~\emph{Is the verbalization a faithful description of what the model predicted?} treated as a \emph{self-supervised} problem, since no human-authored references exist: rather than syntactic overlap metrics such as ROUGE~\cite{lin2004rouge}, we use semantic metrics that assess whether the generated text is grounded in the model's own extracted numerical features.
 
-\textbf{Windowing.}
-We evaluate over 200 scenarios. Each scenario uses a history window of 512 steps and a forecast horizon of 96 steps. Windows are positioned at evenly spaced starting points within the test split.
-
-\textbf{Evaluation.}
-Both LLM personas (\emph{analyst}, \emph{executive}) are evaluated on every window. They share the same \texttt{Qwen2.5-7B-Instruct} weights and differ only in system prompt and few-shot examples. The template verbalizer runs internally as the structured reference draft.
-
-\textbf{Reproducibility.}
-All random sources are fixed to seed $s = 42$ (Python \texttt{random}, \texttt{NumPy}, \texttt{PyTorch}; \texttt{cuDNN} in deterministic mode) and the LLM verbalizer uses greedy decoding. A \texttt{run\_config.json} is written alongside every results CSV, capturing model identifiers, package versions, and the git commit hash.
+\textbf{Performance metrics.}
+Forecast accuracy: \textbf{MASE} (ratio of P50 MAE to a na\"ive one-step baseline), \textbf{Fair MASE} (ratio of P50 MAE to a flat multi-step naive baseline), and \textbf{Coverage} (fraction of actuals inside the P10--P90 interval).
+Verbalization quality (LLM verbalizer only): \textbf{NLI consistency} (per-sentence entailment probability from BART-large-MNLI~\cite{lewis2020bart}, averaged over all $K$ sentences) and \textbf{semantic similarity vs.\ template} (cosine similarity between SBERT~\cite{reimers2019sbert} embeddings of the LLM output and the template draft).
 
 % ----- 6.3 -----
 \subsubsection{Results}
@@ -315,14 +263,17 @@ However, we interpret this lower NLI score as a reflection in lexical divergence
 
 The multi-turn evaluation uses a 100-step window from the ETTh1 dataset~\cite{zhou2021informer} with ten named covariates. For intent-only evaluation no time series data is needed.
 
-\subsubsection{Experimental Setup}
+\subsubsection{Experimental Design}
 
 \textbf{Hardware.} NVIDIA A100 GPU via Google Colab.
 
+\textbf{Software and libraries.} Python~3.10+; \texttt{chronos-forecasting} (\texttt{Chronos-2-small}) for re-running the forecast after input modifications; \texttt{sentence-transformers} (\texttt{all-MiniLM-L6-v2}) for Tier~2 SBERT few-shot classification; \texttt{transformers} (\texttt{Qwen1.5-1.8B-Chat}) as the Tier~3 LLM fallback; Python \texttt{re} for the Tier~1 rule-based patterns.
 
-\textbf{Evaluation sets.} A \textbf{development set} (100 queries) was used to build the regex patterns and serves as the labeled neighbour pool for BERT few-shot inference. The \textbf{test set} (60 queries, written after all patterns and the development set were frozen) covers three difficulty levels: 17 standard phrasings, 23 ambiguous cases, and 20 outlier phrasings designed to test Tier~2 and Tier~3.
+\textbf{Validation method.}
+The evaluation frames intent classification as a multi-class classification problem over five intent types. A \textbf{development set} (100 queries) was used to build the regex patterns and serves as the labeled neighbour pool for SBERT few-shot inference. The \textbf{test set} (60 queries, written after all patterns and the development set were frozen) covers three difficulty levels: 17 standard phrasings, 23 ambiguous cases, and 20 outlier phrasings designed to exercise Tier~2 and Tier~3. Multi-turn state persistence is verified separately by running three two-turn sequences and checking that modifications from earlier turns remain in effect.
 
-\textbf{Reproducibility.} All random sources are globally seeded ($s = 42$) to guarantee reproducible evaluation scenarios. The rule-based tier is inherently deterministic. A \texttt{run\_config.json} is saved for every run to snapshot parameters, package versions, and the git commit hash.
+\textbf{Performance metrics.}
+\textbf{Intent accuracy} (correct intent type), \textbf{covariate resolution accuracy} (correct covariate extracted, for queries that require one), and \textbf{Task Completion Rate} (TCR, conjunction of both), reported overall and per tier. Multi-turn state persistence is verified as a binary check per sequence.
 
 \subsubsection{Results}
 
@@ -353,7 +304,7 @@ Task Completion Rate       & 50/60 & 83.3\% \\
 
 \paragraph*{b) Tier Breakdown}
 
-Table~\ref{tab:ext2_tiers} reports per-tier accuracy. The rule-based tier handles 40 of 60 queries, leaving 20 for Tier~2. Notably, the BERT tier achieves higher accuracy on its subset (94.7\%) than the rules achieve on theirs (92.5\%), showing that the 100-query few-shot pool generalises well to the ambiguous and outlier phrasings that rules miss. The LLM tier handles a single query, which it classifies correctly.
+Table~\ref{tab:ext2_tiers} reports per-tier accuracy. The rule-based tier handles 40 of 60 queries, leaving 20 for Tier~2. Notably, the SBERT tier achieves higher accuracy on its subset (94.7\%) than the rules achieve on theirs (92.5\%), showing that the 100-query few-shot pool generalises well to the ambiguous and outlier phrasings that rules miss. The LLM tier handles a single query, which it classifies correctly.
 
 \begin{table}[h]
 \centering
@@ -380,7 +331,8 @@ Three two-turn sequences were evaluated using the ETTh1 scenario: (1) remove cov
 \section{Conclusions and Takeaways}
 % =====================================================================
 
-\emph{To be completed after experimental results are available.}
+The Extension~1 LLM verbalizer achieves acceptable faithfulness and provides a first working implementation of automatic natural-language verbalization of probabilistic forecasts grounded in extracted numerical features. Of course, some limitations remain. Verbalization quality was evaluated automatically: NLI and SBERT similarity assess groundedness and semantic drift, but neither captures fluency, coherence, or actual user satisfaction. Human evaluation remains the necessary next step, and complementary protocols such as LLM-as-a-judge could provide additional signal without requiring full human annotation. The LLM verbalizer is computationally expensive relative to the template baseline. However, the cost can be justified by the range of extensions it enables: persona-based adaptation (the same forecast communicated in technical language to an analyst or in plain terms to an executive) is just the first use case. The same architecture naturally supports additional personas, domain-specific vocabularies, or output formats such as bullet-point summaries and slide captions. For settings where these capabilities are not needed, the template verbalizer combined with Attention Rollout attribution already provides a meaningful step toward interpretability at a fraction of the cost, and constitutes a practical self-contained baseline.
+
 
 
 % =====================================================================
@@ -437,6 +389,11 @@ in \textit{Proc.\ AAAI}, 2021, pp.~11106--11115.
 Vega Datasets,
 ``Seattle Weather Dataset.''
 [Online]. Available: \url{https://github.com/vega/vega-datasets}
+
+\bibitem{lin2004rouge}
+C.-Y.~Lin,
+``ROUGE: A Package for Automatic Evaluation of Summaries,''
+in \textit{Proc.\ ACL Workshop on Text Summarization Branches Out}, 2004, pp.~74--81.
 
 \end{thebibliography}
 
