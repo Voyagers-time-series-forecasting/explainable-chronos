@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-06-08T22:02:32.462680Z",
+  "variant": "grouped_removal",
+  "dataset": "sp500",
+  "n_windows": 50,
+  "n_valid": 50,
+  "corr_threshold": 0.95,
+  "horizon": 14,
+  "n_history": 100,
+  "seed": 42,
+  "mean_n_groups": 2.0,
+  "mean_rho": 0.31999999999999995,
+  "std_rho": 0.9570362413968129,
+  "pooled_rho": 0.32000000000000006,
+  "pooled_p_value": 0.001172222373671485,
+  "pooled_n_pairs": 100,
+  "mean_rho_random": 0.31999999999999995,
+  "top_group_hit_rate": 0.66
+}

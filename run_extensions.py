@@ -61,6 +61,37 @@ def run_ext2_evaluate(full_pipeline: bool = False, evaluation_set: str = "heldou
     ext2_eval_main(run_full_pipeline=full_pipeline, evaluation_set=evaluation_set)
 
 
+def run_ext2_faithfulness(
+    n_windows: int = 20,
+    horizon: int = 14,
+    dataset: str = "etth1",
+    mode: str = "remove",
+    factors: list | None = None,
+    ablation: bool = False,
+    grouped: bool = False,
+    corr_threshold: float = 0.7,
+) -> None:
+    """Run the Extension 2 attention-faithfulness experiment (what-if vs attention).
+
+    Imports are fully qualified (``extension_2.faithfulness``), so the repo root
+    already on ``sys.path`` is sufficient. We deliberately do NOT add the
+    ``extension_2/`` directory to ``sys.path``: doing so would let its local
+    ``datasets.py`` shadow the HuggingFace ``datasets`` package that
+    sentence-transformers imports.
+    """
+    from extension_2.faithfulness import main as ext2_faithfulness_main
+    ext2_faithfulness_main(
+        n_windows=n_windows,
+        horizon=horizon,
+        dataset=dataset,
+        mode=mode,
+        factors=factors,
+        ablation=ablation,
+        grouped=grouped,
+        corr_threshold=corr_threshold,
+    )
+
+
 # ──────────────── CLI ─────────────────────────────────────────────────
 
 def main() -> None:
@@ -75,11 +106,12 @@ def main() -> None:
     )
     parser.add_argument(
         "action",
-        choices=["evaluate", "evaluate-full"],
+        choices=["evaluate", "evaluate-full", "faithfulness"],
         help=(
             "Action to perform. "
             "ext1: evaluate (full benchmark). "
-            "ext2: evaluate (intent-only, fast) | evaluate-full (Chronos-2 + NLI)."
+            "ext2: evaluate (intent-only, fast) | evaluate-full (Chronos-2 + NLI) | "
+            "faithfulness (attention vs what-if sensitivity experiment)."
         ),
     )
     parser.add_argument(
@@ -130,6 +162,53 @@ def main() -> None:
             "'dev': 40-query development set."
         ),
     )
+    parser.add_argument(
+        "--n-windows",
+        type=int,
+        default=20,
+        help="Number of ETTh1 windows for the ext2 faithfulness experiment.",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=14,
+        help="Forecast horizon (steps) for the ext2 faithfulness experiment.",
+    )
+    parser.add_argument(
+        "--perturbation",
+        choices=["remove", "negate", "scale"],
+        default="remove",
+        help=(
+            "What-if intervention for the ext2 faithfulness experiment. "
+            "'remove' (erasure, default) and 'negate' move the forecast; "
+            "'scale' is ~no-op (Chronos-2 is scale-invariant to covariates)."
+        ),
+    )
+    parser.add_argument(
+        "--factors",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Scaling factors for --perturbation scale (default: 0.5 1.5).",
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        default=False,
+        help="Also run the perturbation-magnitude robustness ablation.",
+    )
+    parser.add_argument(
+        "--grouped",
+        action="store_true",
+        default=False,
+        help="Redundancy-corrected faithfulness: remove correlated covariates as groups.",
+    )
+    parser.add_argument(
+        "--corr-threshold",
+        type=float,
+        default=0.7,
+        help="|correlation| threshold for grouping covariates (with --grouped).",
+    )
 
     args = parser.parse_args()
 
@@ -151,6 +230,16 @@ def main() -> None:
         ("ext2", "evaluate-full"): lambda: run_ext2_evaluate(
             full_pipeline=True,
             evaluation_set=args.eval_set,
+        ),
+        ("ext2", "faithfulness"): lambda: run_ext2_faithfulness(
+            n_windows=args.n_windows,
+            horizon=args.horizon,
+            dataset=(args.dataset[0] if args.dataset else "etth1"),
+            mode=args.perturbation,
+            factors=args.factors,
+            ablation=args.ablation,
+            grouped=args.grouped,
+            corr_threshold=args.corr_threshold,
         ),
     }
 

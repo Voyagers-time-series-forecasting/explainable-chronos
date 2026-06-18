@@ -360,43 +360,89 @@ class DialogueSystem:
         original: PipelineResult,
         original_forecast: Dict[str, Any],
     ) -> DialogueResponse:
-        """Handle a counterfactual query about historical inputs.
+        """Handle a counterfactual query.
 
-        The system only modifies future forecast inputs; it cannot alter
-        historical data retroactively. This handler explains the limitation
-        and points the user toward what the system can do instead.
+        Historical inputs cannot be altered retroactively. When the query names
+        a covariate, we answer with a *forward-looking* what-if instead: the
+        covariate is removed (erased) from here on and the resulting forecast
+        change is reported. Removal — rather than scaling — is used because
+        Chronos-2 standardises its covariates internally and is therefore
+        invariant to positive scaling; only erasure (or a sign flip) moves the
+        forecast. The intervention is grounded in counterfactual explanations
+        (Wachter et al., 2017): the minimal input change that alters the
+        outcome. The hypothetical is exploratory and does NOT persist into the
+        dialogue state.
         """
         cov = intent.target_covariate
-        if cov:
-            suggestion = (
-                f"I cannot retroactively alter past values of '{cov}'. "
-                f"However, I can show you what the forecast would look like "
-                f"if '{cov}' were removed or scaled in future periods — "
-                f"just ask me to remove or scale it."
+        remove_intent = ParsedIntent(
+            intent_type="remove_covariate",
+            raw_query=user_query,
+            target_covariate=cov,
+        )
+        mod = self._modifier.apply(remove_intent, self.covariates, self.horizon)
+
+        if cov and mod.modified and mod.covariates is not None:
+            modified_result = self._pipeline.run(
+                self.history, horizon=self.horizon, covariates=mod.covariates,
             )
-        else:
-            suggestion = (
-                "I can only modify future forecast inputs, not historical data. "
-                "Try asking me to remove or scale a specific covariate, "
-                "or to change the forecast horizon."
+            modified_forecast = modified_result.forecast
+
+            orig_p50 = np.asarray(original_forecast["p50"])
+            mod_p50 = np.asarray(modified_forecast["p50"])
+            m = min(len(orig_p50), len(mod_p50))
+            delta_p50 = mod_p50[:m] - orig_p50[:m]
+            mean_delta = float(np.mean(delta_p50))
+            level = float(np.mean(np.abs(orig_p50[:m]))) + 1e-9
+            pct = mean_delta / level * 100.0
+            direction = "higher" if mean_delta > 0 else ("lower" if mean_delta < 0 else "unchanged")
+
+            answer = (
+                f"I cannot retroactively alter past values of '{cov}'. "
+                f"As a forward-looking what-if, if '{cov}' were removed from here on, "
+                f"the median forecast would be {abs(pct):.1f}% {direction} "
+                f"(mean delta P50 = {mean_delta:+.3f}) over the horizon. "
+                f"{modified_result.verbalization.summary}"
             )
 
+            response = DialogueResponse(
+                query=user_query,
+                intent=intent,
+                modification=ModificationResult(
+                    covariates=self.covariates,
+                    horizon=self.horizon,
+                    description=(
+                        f"Counterfactual reframed as a forward-looking what-if: "
+                        f"removed '{cov}' (exploratory, state unchanged)."
+                    ),
+                    modified=False,  # exploratory: do not persist the hypothetical
+                ),
+                answer=answer,
+                consistency_score=modified_result.consistency_report.overall_score,
+                is_consistent=modified_result.consistency_report.is_consistent,
+                delta_p50=delta_p50,
+                original_forecast=original_forecast,
+                modified_forecast=modified_forecast,
+                task_completed=True,
+            )
+            self._turn_history.append(response)
+            return response
+
+        # No covariate identified → cannot build a forward-looking what-if.
         answer = (
-            f"{suggestion} "
+            "I can only modify future forecast inputs, not historical data. "
+            "Try asking me to remove or scale a specific covariate, "
+            "or to change the forecast horizon. "
             f"For reference, the current forecast: {original.verbalization.summary}"
         )
-
-        modification = ModificationResult(
-            covariates=self.covariates,
-            horizon=self.horizon,
-            description="Counterfactual query — historical inputs cannot be modified.",
-            modified=False,
-        )
-
         response = DialogueResponse(
             query=user_query,
             intent=intent,
-            modification=modification,
+            modification=ModificationResult(
+                covariates=self.covariates,
+                horizon=self.horizon,
+                description="Counterfactual query — no covariate to apply a forward-looking what-if.",
+                modified=False,
+            ),
             answer=answer,
             consistency_score=original.consistency_report.overall_score,
             is_consistent=original.consistency_report.is_consistent,
@@ -405,7 +451,6 @@ class DialogueSystem:
             modified_forecast=original_forecast,
             task_completed=True,
         )
-
         self._turn_history.append(response)
         return response
 

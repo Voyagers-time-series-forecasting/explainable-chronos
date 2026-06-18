@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-06-08T22:02:20.497834Z",
+  "variant": "grouped_removal",
+  "dataset": "weather",
+  "n_windows": 50,
+  "n_valid": 50,
+  "corr_threshold": 0.95,
+  "horizon": 14,
+  "n_history": 100,
+  "seed": 42,
+  "mean_n_groups": 3.0,
+  "mean_rho": 0.09,
+  "std_rho": 0.6902380541730305,
+  "pooled_rho": 0.09000000000000002,
+  "pooled_p_value": 0.27339670664197785,
+  "pooled_n_pairs": 150,
+  "mean_rho_random": -0.03,
+  "top_group_hit_rate": 0.36
+}

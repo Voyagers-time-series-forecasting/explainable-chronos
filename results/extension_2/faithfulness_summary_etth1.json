@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-06-07T16:16:18.811352Z",
+  "config": {
+    "n_windows": 50,
+    "n_valid": 50,
+    "perturbation_mode": "remove",
+    "factors": [
+      0.5,
+      1.5
+    ],
+    "n_history": 100,
+    "horizon": 14,
+    "seed": 42,
+    "device": "cuda",
+    "dataset": "etth1"
+  },
+  "mean_rho": 0.018285714285714304,
+  "std_rho": 0.4549056041693776,
+  "frac_rho_positive": 0.56,
+  "mean_rho_random": 0.06971428571428571,
+  "top_driver_hit_rate": 0.22,
+  "pooled_rho": 0.018285714285714304,
+  "pooled_p_value": 0.7524412326808037,
+  "pooled_n_pairs": 300
+}

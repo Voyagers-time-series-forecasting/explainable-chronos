@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-06-07T16:16:42.797768Z",
+  "config": {
+    "n_windows": 50,
+    "n_valid": 50,
+    "perturbation_mode": "remove",
+    "factors": [
+      0.5,
+      1.5
+    ],
+    "n_history": 100,
+    "horizon": 14,
+    "seed": 42,
+    "device": "cuda",
+    "dataset": "weather"
+  },
+  "mean_rho": 0.09,
+  "std_rho": 0.6902380541730305,
+  "frac_rho_positive": 0.54,
+  "mean_rho_random": 0.15,
+  "top_driver_hit_rate": 0.36,
+  "pooled_rho": 0.09000000000000002,
+  "pooled_p_value": 0.27339670664197785,
+  "pooled_n_pairs": 150
+}

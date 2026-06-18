@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-06-08T21:56:39.036775Z",
+  "variant": "grouped_removal",
+  "dataset": "ettm1",
+  "n_windows": 50,
+  "n_valid": 50,
+  "corr_threshold": 0.95,
+  "horizon": 14,
+  "n_history": 100,
+  "seed": 42,
+  "mean_n_groups": 4.98,
+  "mean_rho": 0.20342857142857138,
+  "std_rho": 0.5501471538404978,
+  "pooled_rho": 0.17530075746324075,
+  "pooled_p_value": 0.005540710419445379,
+  "pooled_n_pairs": 249,
+  "mean_rho_random": 0.1214285714285714,
+  "top_group_hit_rate": 0.4
+}
