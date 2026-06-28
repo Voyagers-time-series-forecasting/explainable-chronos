@@ -101,7 +101,7 @@ class VerbalizationPipeline:
         verbalization = self.verbalizer.verbalize(features, attribution=attribution)
         logger.info("Verbalization: %s", verbalization.summary)
 
-        # Stage E — NLI consistency scoring
+        # Stage E — Scoring
         report = self.scorer.score(verbalization)
         logger.info(
             "Consistency: %.4f (%s)",
