@@ -6,7 +6,10 @@ A NLP framework for [Chronos-2](https://github.com/amazon-science/chronos-foreca
 
 Chronos-2 only outputs numbers: a P10, P50, and P90 curve over the forecast horizon. Extension 1 turns those numbers into a short paragraph that explains what is being predicted and why.
 
-It works in three steps. First, it reads the forecast itself and pulls out simple facts like the trend direction, the predicted magnitude, and how wide the uncertainty band is. Second, it looks inside the model's attention weights and traces them back to the original inputs using attention rollout, so it can tell which covariate the model relied on most and which point in the past it focused on. Third, it feeds these extracted facts, not the raw model internals, into a language model that writes a fluent paragraph grounded strictly in those facts. A consistency check then verifies that the generated sentences are actually entailed by the facts they are supposed to describe.
+- Extracts simple facts from the forecast itself: trend direction, predicted magnitude, uncertainty width
+- Traces the model's attention weights back to the original inputs with attention rollout, to find which covariate mattered most and which past time window it focused on
+- Feeds these extracted facts, into a language model that writes a fluent paragraph grounded strictly in those facts
+- Scores the generated sentences for consistency, checking that each one is actually entailed by the fact it describes
 
 ```
    P10 / P50 / P90        attention weights
