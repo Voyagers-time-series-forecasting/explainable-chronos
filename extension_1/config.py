@@ -48,13 +48,9 @@ CONSISTENCY_THRESHOLD: float = 0.70
 ATTRIBUTION_TOP_K: int = 5
 
 # LLM model selection
-LLM_MODEL_CPU: str = "Qwen/Qwen1.5-1.8B-Chat"       # compact; fits in RAM on CPU
-LLM_MODEL_CUDA: str = "Qwen/Qwen2.5-7B-Instruct"    # 7B in fp16 (~14 GB VRAM)
-
-# Fusion model selection — a small seq2seq model used to fuse already-grounded
-# template sentences into fluent prose, instead of freely rewriting them.
-# Lightweight enough to run on CPU, so no separate CPU/CUDA variant is needed.
-FUSION_MODEL_NAME: str = "google/flan-t5-base"      # ~250M params
+LLM_MODEL_CPU: str = "Qwen/Qwen1.5-1.8B-Chat"
+LLM_MODEL_CUDA: str = "Qwen/Qwen2.5-7B-Instruct"
+FUSION_MODEL_NAME: str = "google/flan-t5-base"
 
 
 def select_llm_model() -> str:
