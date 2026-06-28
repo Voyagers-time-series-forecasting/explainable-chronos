@@ -16,6 +16,7 @@ from extension_1.attribution.types import AttributionResult, CovariateSet
 from extension_1.features.extractor import ForecastFeatures, extract_features
 from extension_1.verbalization.template import TemplateVerbalizer, VerbalizationResult
 from extension_1.verbalization.llm import LLMVerbalizer
+from extension_1.verbalization.fusion import FusionVerbalizer
 from shared.forecast_provider import ChronosForecastProvider, ForecastDict
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class VerbalizationPipeline:
     def __init__(
         self,
         forecast_provider: ChronosForecastProvider,
-        verbalizer: Union[TemplateVerbalizer, LLMVerbalizer],
+        verbalizer: Union[TemplateVerbalizer, LLMVerbalizer, FusionVerbalizer],
         scorer: NLIConsistencyScorer,
         config: Optional[PipelineConfig] = None,
     ) -> None:

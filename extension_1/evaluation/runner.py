@@ -44,7 +44,7 @@ import yfinance as yf
 
 from extension_1.config import (
     PipelineConfig, RANDOM_SEED,
-    NLI_MODEL_NAME, LLM_MODEL_CPU, LLM_MODEL_CUDA,
+    NLI_MODEL_NAME, LLM_MODEL_CPU, LLM_MODEL_CUDA, FUSION_MODEL_NAME,
 )
 from extension_1.evaluation.scoring import NLIConsistencyScorer, SemanticSimilarityScorer
 from extension_1.attribution.types import CovariateSet
@@ -52,6 +52,7 @@ from extension_1.pipeline import PipelineResult, VerbalizationPipeline
 from extension_1.evaluation.trace import render_trace
 from extension_1.verbalization.template import TemplateVerbalizer
 from extension_1.verbalization.llm import LLMVerbalizer
+from extension_1.verbalization.fusion import FusionVerbalizer
 from shared.forecast_provider import ChronosForecastProvider
 
 logger = logging.getLogger(__name__)
@@ -327,9 +328,16 @@ def build_pipelines(
     seed: int,
     config: PipelineConfig,
 ) -> list[tuple[str, VerbalizationPipeline]]:
-    """Build analyst and executive LLM pipelines sharing one loaded model."""
+    """Build the analyst, executive, and fusion pipelines.
+
+    The two LLM personas share one loaded Qwen model. The fusion pipeline
+    loads its own, much smaller, FLAN-T5 model independently, so a failure
+    in either family doesn't take the other one down with it.
+    """
     provider = ChronosForecastProvider(enable_attention=True)
     nli_scorer = NLIConsistencyScorer()
+    pipelines: list[tuple[str, VerbalizationPipeline]] = []
+
     try:
         analyst_llm = LLMVerbalizer(
             template_verbalizer=TemplateVerbalizer(seed=seed),
@@ -343,13 +351,19 @@ def build_pipelines(
         )
         exec_llm.share_model_from(analyst_llm)
 
-        return [
-            ("analyst", VerbalizationPipeline(provider, analyst_llm, nli_scorer, config)),
-            ("executive", VerbalizationPipeline(provider, exec_llm, nli_scorer, config)),
-        ]
+        pipelines.append(("analyst", VerbalizationPipeline(provider, analyst_llm, nli_scorer, config)))
+        pipelines.append(("executive", VerbalizationPipeline(provider, exec_llm, nli_scorer, config)))
     except Exception as e:
         logger.warning("Could not initialise LLM pipelines: %s", e)
-        return []
+
+    try:
+        fusion_verbalizer = FusionVerbalizer(template_verbalizer=TemplateVerbalizer(seed=seed))
+        fusion_verbalizer._load_model()
+        pipelines.append(("fusion", VerbalizationPipeline(provider, fusion_verbalizer, nli_scorer, config)))
+    except Exception as e:
+        logger.warning("Could not initialise fusion pipeline: %s", e)
+
+    return pipelines
 
 
 def _make_covariate_set(cov_dict: Dict[str, np.ndarray]) -> CovariateSet:
@@ -414,6 +428,7 @@ def _save_run_config(
             "chronos": "autogluon/chronos-2-small",
             "nli": NLI_MODEL_NAME,
             "llm": LLM_MODEL_CUDA if cuda_available else LLM_MODEL_CPU,
+            "fusion": FUSION_MODEL_NAME,
             "sbert": "sentence-transformers/all-MiniLM-L6-v2",
         },
         "python": sys.version,
@@ -566,10 +581,12 @@ def plot_results(df: pd.DataFrame, save_dir: Path = EVAL_DIR) -> str:
 
     datasets = sorted(df["dataset"].unique())
     personas = sorted(df["persona"].unique()) if "persona" in df.columns else ["analyst"]
-    p_colors = {"analyst": "#dd8452", "executive": "#4c72b0"}
+    p_colors = {"analyst": "#dd8452", "executive": "#4c72b0", "fusion": "#55a868"}
     n_p = len(personas)
-    bar_width = 0.35 if n_p > 1 else 0.5
-    offsets = ([-bar_width/2, bar_width/2] if n_p == 2 else [0])
+    # Spread bars evenly across a fixed total width, centred on each dataset tick —
+    # generalises the old two-persona special case to any number of pipelines.
+    bar_width = 0.8 / n_p
+    offsets = [(i - (n_p - 1) / 2) * bar_width for i in range(n_p)]
     x = np.arange(len(datasets))
 
 
@@ -738,7 +755,7 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
 
 def print_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 65)
-    print("  EVALUATION SUMMARY (analyst vs executive)")
+    print("  EVALUATION SUMMARY (analyst vs executive vs fusion)")
     print("=" * 65)
     print(df.groupby("dataset")[["mase", "fair_mase", "coverage_pct"]].mean().round(4))
     print("\n  NLI Consistency by persona:")
