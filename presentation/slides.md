@@ -535,7 +535,7 @@ The LLM (Qwen2.5-7B-Instruct) rewrites the template draft via **few-shot in-cont
 
 ## Example Output
 
-**Dataset:** weather · **Target:** `temp_max` · **Horizon:** 14 days
+**Dataset:** finance · **Target:** `AAPL_close` · **Horizon:** 14 days
 
 <div class="cols">
 <div>
@@ -544,9 +544,9 @@ The LLM (Qwen2.5-7B-Instruct) rewrites the template draft via **few-shot in-cont
 
 <table class="mat">
 <tr><th>Covariate</th><th>Attribution</th><th>Peak</th><th>Breadth</th></tr>
-<tr><td class="rl">temp_min</td><td class="c3">39.0%</td><td class="c0">day −27</td><td class="c0">focused</td></tr>
-<tr><td class="rl">precipitation</td><td class="c2">30.8%</td><td class="c0">day −41</td><td class="c0">broad</td></tr>
-<tr><td class="rl">wind</td><td class="c1">30.2%</td><td class="c0">day −10</td><td class="c0">focused</td></tr>
+<tr><td class="rl">interest_rate</td><td class="c3">39.0%</td><td class="c0">day −27</td><td class="c0">focused</td></tr>
+<tr><td class="rl">trading_volume</td><td class="c2">30.8%</td><td class="c0">day −41</td><td class="c0">broad</td></tr>
+<tr><td class="rl">sector_index</td><td class="c1">30.2%</td><td class="c0">day −10</td><td class="c0">focused</td></tr>
 </table>
 
 </div>
@@ -554,7 +554,7 @@ The LLM (Qwen2.5-7B-Instruct) rewrites the template draft via **few-shot in-cont
 
 **Generated explanation**
 
-> *"Maximum temperatures are forecast to rise by roughly 4°C over the next two weeks, driven primarily by minimum temperature patterns from about four weeks ago and recent wind conditions. Uncertainty is moderate, with the plausible range spanning approximately 6°C."*
+> *"Closing price is forecast to rise by roughly 4% over the next two weeks, driven primarily by interest rate trends from about four weeks ago and recent sector index movement. Uncertainty is moderate, with the plausible range spanning approximately 6%."*
 
 </div>
 </div>
@@ -576,7 +576,7 @@ Dataset: Seattle Weather · 200 windows · history 512 steps · horizon 96 steps
 
 Two personas share the same model weights but differ in system prompt and few-shot examples: **analyst** uses technical terminology and stays close to the extracted features; **executive** paraphrases into plain language for non-technical readers.
 
-| Metric                    | Analyst           | Executive     |
-| ------------------------- | ----------------- | ------------- |
-| NLI consistency           | **0.733** ± 0.075 | 0.686 ± 0.087 |
-| Semantic sim. vs template | **0.864** ± 0.035 | 0.789 ± 0.054 |
+| Metric          | Analyst           | Executive     |
+| --------------- | ----------------- | ------------- |
+| NLI consistency | **0.733** ± 0.075 | 0.686 ± 0.087 |
+| SBERT score     | **0.864** ± 0.035 | 0.789 ± 0.054 |
