@@ -542,6 +542,7 @@ def run_evaluation(
                     "coverage_pct": accuracy["coverage_pct"],
                     "interval_sharpness": accuracy["interval_sharpness"],
                     "rst_relations": ",".join(result.verbalization.rst_relations),
+                    "verbalization_time_sec": result.verbalization_time_sec,
                 }
 
                 past_attrs = [a for a in result.attribution.attributions if "(future)" not in a.name]
@@ -551,10 +552,11 @@ def run_evaluation(
                 records.append(record)
                 logger.info(
                     "[%s] window %d/%d [%s]  nli=%.3f  semantic=%.3f  "
-                    "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%",
+                    "mase=%.4f  fair_mase=%.4f  coverage=%.1f%%  verbalize=%.3fs",
                     spec.name, w_idx + 1, len(windows), persona,
                     result.consistency_report.overall_score, semantic_sim,
                     accuracy["mase"], accuracy["fair_mase"], accuracy["coverage_pct"],
+                    result.verbalization_time_sec,
                 )
 
                 if save_traces:
@@ -683,6 +685,8 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
     lines.append(f"| Mean MASE | {df['mase'].mean():.4f} |")
     lines.append(f"| Mean fair_mase | {df['fair_mase'].mean():.4f} |")
     lines.append(f"| Mean coverage | {df['coverage_pct'].mean():.1f}% |")
+    if "verbalization_time_sec" in df.columns:
+        lines.append(f"| Cumulative verbalization time (all personas) | {df['verbalization_time_sec'].sum():.2f}s |")
     lines.append("")
 
 
@@ -742,6 +746,19 @@ def write_report(df: pd.DataFrame, mode_key: str, save_dir: Path = EVAL_DIR) -> 
         )
         lines.append("")
 
+    if "verbalization_time_sec" in df.columns:
+        lines.append("## 6. Verbalization Compute Time by Persona")
+        lines.append("")
+        lines.append("| Persona | Windows | Cumulative (s) | Mean (s) | Std (s) |")
+        lines.append("|---|---|---|---|---|")
+        group_col = "persona" if "persona" in df.columns else "dataset"
+        for key, grp in df.groupby(group_col):
+            col = grp["verbalization_time_sec"].dropna()
+            lines.append(
+                f"| {key} | {len(col)} "
+                f"| {col.sum():.2f} | {col.mean():.4f} | {col.std():.4f} |"
+            )
+        lines.append(f"\n**Total across all verbalizers: {df['verbalization_time_sec'].sum():.2f}s**\n")
 
     lines.append("## Visualizations")
     lines.append("")
@@ -764,6 +781,10 @@ def print_summary(df: pd.DataFrame) -> None:
     if "semantic_vs_template" in df.columns:
         print("\n  Semantic similarity vs template by persona:")
         print(df.groupby(group_col)[["semantic_vs_template"]].agg(["mean", "std", "min"]).round(4))
+    if "verbalization_time_sec" in df.columns:
+        print("\n  Verbalization compute time by persona (seconds):")
+        print(df.groupby(group_col)[["verbalization_time_sec"]].agg(["sum", "mean", "std"]).round(4))
+        print(f"\n  Total verbalization time across all personas: {df['verbalization_time_sec'].sum():.2f}s")
     print()
 
 

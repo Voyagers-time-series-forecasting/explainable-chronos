@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -33,6 +34,7 @@ class PipelineResult:
     consistency_report: ConsistencyReport
     attention_weights: Optional[dict] = None
     future_covariates: Optional[CovariateSet] = None
+    verbalization_time_sec: float = 0.0
 
 
 class VerbalizationPipeline:
@@ -99,8 +101,12 @@ class VerbalizationPipeline:
         )
 
         # Stage D — Verbalization
+        verbalization_start = time.perf_counter()
         verbalization = self.verbalizer.verbalize(features, attribution=attribution)
-        logger.info("Verbalization: %s", verbalization.summary)
+        verbalization_time_sec = time.perf_counter() - verbalization_start
+        logger.info(
+            "Verbalization (%.3fs): %s", verbalization_time_sec, verbalization.summary
+        )
 
         # Stage E — NLI consistency scoring
         report = self.scorer.score(verbalization)
@@ -118,4 +124,5 @@ class VerbalizationPipeline:
             consistency_report=report,
             attention_weights=attention_weights,
             future_covariates=future_covariates,
+            verbalization_time_sec=verbalization_time_sec,
         )
