@@ -1,52 +1,41 @@
 # Explainable Chronos
 
-A modular NLP framework that sits on top of [Chronos-2](https://github.com/amazon-science/chronos-forecasting) at inference time to produce natural-language explanations of probabilistic time-series forecasts.
+A NLP framework for [Chronos-2](https://github.com/amazon-science/chronos-forecasting) at inference time to produce natural-language explanations of probabilistic time-series forecasts.
 
-## Overview
+## Extension 1: Verbalization
 
-**Extension 1 — Verbalization and Consistency Scoring**
+Chronos-2 only outputs numbers: a P10, P50, and P90 curve over the forecast horizon. Extension 1 turns those numbers into a short paragraph that explains what is being predicted and why.
 
-Given a Chronos-2 quantile forecast (P10/P50/P90), the pipeline:
-1. Extracts interpretable numerical features (trend, uncertainty, regime shift, trajectory, covariate attribution)
-2. Computes covariate importance and temporal saliency via Attention Rollout
-3. Generates a natural-language summary via a Template or LLM verbalizer
-4. Scores each sentence for factual consistency using NLI (BART-large-MNLI)
-
-## Repository Layout
+It works in three steps. First, it reads the forecast itself and pulls out simple facts like the trend direction, the predicted magnitude, and how wide the uncertainty band is. Second, it looks inside the model's attention weights and traces them back to the original inputs using attention rollout, so it can tell which covariate the model relied on most and which point in the past it focused on. Third, it feeds these extracted facts, not the raw model internals, into a language model that writes a fluent paragraph grounded strictly in those facts. A consistency check then verifies that the generated sentences are actually entailed by the facts they are supposed to describe.
 
 ```
-explainable-chronos/
-├── run_extensions.py          # CLI entry point
-├── requirements.txt
-├── notebooks/
-│   ├── demo.ipynb             # Framework demo — three synthetic scenarios with visualisations
-│   └── run_evaluation.ipynb   # Full benchmark evaluation (Colab-ready)
-├── shared/
-│   └── forecast_provider.py   # Chronos-2 inference wrapper
-├── extension_1/
-│   ├── config.py              # Thresholds and constants
-│   ├── pipeline.py            # End-to-end orchestration
-│   ├── features/
-│   │   └── extractor.py       # Forecast feature extraction
-│   ├── verbalization/
-│   │   ├── template.py        # Template verbalizer
-│   │   ├── llm.py             # LLM verbalizer (Qwen2.5-7B-Instruct)
-│   │   └── trajectory.py      # Trajectory narration helpers
-│   ├── attribution/
-│   │   ├── attention.py       # Attention Rollout attributor
-│   │   └── types.py           # Attribution data types
-│   └── evaluation/
-│       ├── runner.py          # Benchmark evaluation loop
-│       ├── scoring.py         # NLI consistency scorer
-│       ├── factuality.py      # Fact recall and feature completeness
-│       ├── judge.py           # LLM-as-judge pairwise comparison
-│       └── trace.py           # Per-scenario trace visualisation
-└── results/
-    └── extension_1/           # All evaluation outputs
+   P10 / P50 / P90        attention weights
+        |                       |
+        v                       v
+ [ feature extractor ]   [ attention rollout ]
+        |                       |
+        v                       v
+   trend, magnitude,     covariate ranking,
+   uncertainty width     peak time, focus breadth
+        \                       /
+         \                     /
+          v                   v
+         [ structured facts ]
+                  |
+                  v
+         [ language model ]
+                  |
+                  v
+       natural-language explanation
+                  |
+                  v
+        [ consistency scoring ]
 ```
 
-## Quick Start
+## Reproducibility
 
-**► Try the demo first:** [`notebooks/demo.ipynb`](notebooks/demo.ipynb) runs the full pipeline on three synthetic sales scenarios (growth, decline, volatile market) and shows forecast plots, covariate attribution, temporal saliency, the generated verbalization, and per-sentence NLI consistency scores — no dataset download required.
+All results and demos in this project can be reproduced from the notebooks in [notebooks/](notebooks/):
 
-**Benchmark evaluation:** [`notebooks/run_evaluation.ipynb`](notebooks/run_evaluation.ipynb) runs the full evaluation on real datasets (Seattle Weather, ETTh1, ETTm1, S&P 500) and produces CSV results, summary plots, and a markdown report.
+- [notebooks/ex_1_run_evaluation.ipynb](notebooks/ex_1_run_evaluation.ipynb) — Extension 1 evaluation
+- [notebooks/ex_2_run_evaluation.ipynb](notebooks/ex_2_run_evaluation.ipynb) — Extension 2 evaluation
+
